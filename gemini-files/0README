@@ -1,0 +1,101 @@
+Newspaper clippings:
+
+1. Download newspaper clippings from newspapers.com in this name format:
+
+	The_Daily_Times_1901_04_17_03.jpg
+
+2. Rename into standard format
+
+	rename-news.sh *.jpg
+
+2. Upload to File API
+
+	gemini-files.sh --delete
+	gemini-files.sh --upload *.jpg
+
+3. Create OCR files
+
+	gemini-files.sh --ocr all
+	
+Books:
+
+1. Download book PDF in this format
+
+	naturalhistoryse0000whit.pdf
+
+2. pdfslice.sh into smaller PDF(s) with page range specified like this:
+
+	naturalhistoryse0000whit_205-225.pdf
+
+3. Rename to standard format:
+
+	~/scripts/rename-ia.sh -d naturalhistoryse0000whit_205-225.pdf
+	(the -d will add the date to the start of the filename)
+	Output: '1789 +a White +b The Natural History of Selborne +p London; Benjamin White +n 205-225 +iaid naturalhistoryse0000whit.pdf'
+
+4. Upload to File API
+
+	gemini-files.sh --upload '1789 +a White +b The Natural History ...'
+
+5. Create .ocr version
+
+	gemini-files.sh --ocr '1789 +a White +b The Natural History ...'
+	
+
+Journals and web pages:
+
+1. pdfslice.sh into smaller parts as needed
+2. rename-ia.sh and manually enter metadata
+
+------------------
+
+Create Cache File
+
+0. cd to project directory containing .ocr files
+1. awk 'FNR==1 {print "\n---------------------------------\nFile: " FILENAME "\n---------------------------------"} 1' *.ocr > all-ocr-project.txt
+2. gemini-cache.sh all-ocr-project.txt
+3. gemini-ask.sh query1.txt
+   gemini-ask.sh query1.2.txt
+   gemini-ask.sh query1.3.txt
+   etc.. query1.txt will produce query1.out and keep a history. Then query1.2.txt will remember the conversation context in that thread.
+   Each major number change eg. query2.txt will not remember the conversation with the query1.txt thread.
+4. Rember! Cache only lasts 1 hour
+
+Step 2 automates these steps:
+ *. gemini-files.sh --delete all-ocr-project.txt
+ *. gemini-files.sh --upload all-ocr-project.txt      (note the file ID)
+ *. gemini-files.sh --create-cache <file ID>         (note the cache ID)
+ *. gemini-files.sh --list-cache
+
+Step 3 automates this step:
+ *. gemini-files.sh --query <cache ID> --query-file query7.2.txt --use-history --history-file query7.json > query7.2.out ; cat query7.2.out
+      query7.2.txt is where the prompt is written
+      query7.json is the conversation history
+      query7.2.out is the output of the query
+      gemini-ask.sh learns the cache ID from a hidden file in the CWD as maintained by gemini-cache.sh
+
+-------------------
+
+Ask question (prompt is in query2.txt):
+
+gemini-files.sh --query cachedContents/t9etxo1f3gkx7n0t08wlzfpj3kir74sd66g20mhq --query-file query2.txt --use-history --history-file query2.json > query2.out
+
+Followup question:
+
+gemini-files.sh --query cachedContents/t9etxo1f3gkx7n0t08wlzfpj3kir74sd66g20mhq --query-file query2.2.txt --use-history --history-file query2.json > query2.2.out
+
+New question:
+
+gemini-files.sh --query cachedContents/t9etxo1f3gkx7n0t08wlzfpj3kir74sd66g20mhq --query-file query3.txt --use-history --history-file query3.json > query3.out
+
+----------------------
+
+Make a sourcebook PDF of the jpg clippings and .txt file dump of the OCR versions
+
+1. Copy all .jpg and .ocr files to a subdirectory along with ~/projects/wp2latex/makesourcebook.py
+2. Edit makesourcebook.py near top to create settings
+3. ./makesourcebook.py
+4. pdflatex project_sourcebook.tex
+   pdflatex project_sourcebook.tex (run twice)
+5. awk 'FNR==1 {sub(".ocr$", "", FILENAME); print "\n---------------------------------\n" FILENAME "\n---------------------------------"} 1' *.ocr > project_sourcebook.txt
+6. Upload to archive.org
