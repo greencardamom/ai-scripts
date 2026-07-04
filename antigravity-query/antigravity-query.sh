@@ -53,6 +53,11 @@ while [ $# -gt 0 ]; do
    shift
 done
 
+if [ -z "$doc" ] && [ -z "$query_file" ]; then
+   echo "Usage: antigravity-query.sh --query <doc.pdf> --query-file <prompt.txt> [--model \"<name>\"] [--add-dir <dir>] [--timeout <dur>] [--hard-timeout <s>] [--json-output] [-v]" >&2
+   exit 1
+fi
+
 [ -f "$doc" ]        || { echo "Error: doc not found: $doc" >&2; exit 1; }
 [ -f "$query_file" ] || { echo "Error: query file not found: $query_file" >&2; exit 1; }
 [ -n "$add_dir" ]    || add_dir="$(dirname "$doc")"
