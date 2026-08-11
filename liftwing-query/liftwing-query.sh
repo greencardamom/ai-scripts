@@ -52,8 +52,19 @@
 SCRIPT_NAME="liftwing-query.sh"
 # Environment variable consulted when --key-file is not given
 TOKEN_ENV_VAR="LIFTWING_TOKEN"
-# Token file used when neither --key-file nor the env var is set. Absent = anonymous.
-DEFAULT_TOKEN_FILE="${HOME}/toolforge/scripts/secrets/greencbot.oauth2token"
+# Secret directories searched, in order, for the default token and the tfproxy
+# credentials. Hosts keep secrets in different places; searching a list keeps ONE
+# script identical everywhere instead of a per-host fork.
+SECRET_SEARCH_DIRS=(
+   "${HOME}/.config/wikiget/secrets"
+   "${HOME}/scripts/secrets"
+   "${HOME}/toolforge/scripts/secrets"
+)
+# Basenames looked up inside SECRET_SEARCH_DIRS
+TOKEN_BASENAME="greencbot.oauth2token"
+TFPROXY_URL_BASENAME="tfproxy.url"
+TFPROXY_HEADER_BASENAME="tfproxy.header"
+TFPROXY_PASSWORD_BASENAME="tfproxy.password"
 # Endpoint template; %s is replaced by the model id
 API_URL_TEMPLATE="https://api.wikimedia.org/service/lw/inference/v1/models/%s/openai/v1/chat/completions"
 # The default model to use if not specified via --model
@@ -100,6 +111,13 @@ show_help() {
    echo "       --json-output           Print the raw API JSON instead of extracted text."
    echo ""
    echo "Connection / auth:"
+   echo "      --via <direct|tfproxy> How to reach LiftWing (Default: direct)."
+   echo "                            direct  = straight to api.wikimedia.org. Subject to the"
+   echo "                                      100 req/hour cap shared across ALL llm-* models,"
+   echo "                                      which a token does NOT raise (see below)."
+   echo "                            tfproxy = through a Toolforge proxy. Toolforge is a"
+   echo "                                      'known network' = effectively unlimited. No token"
+   echo "                                      is sent; the tier comes from the request origin."
    echo "  -k, --key-file <path>     File containing an OAuth 2.0 access token (JWT)."
    echo "                            Overrides \$${TOKEN_ENV_VAR}. Omit for anonymous"
    echo "                            access (capped at 100 requests/hour)."
@@ -110,10 +128,21 @@ show_help() {
    echo "  -v, --verbose             Verbose logging ('Info:' messages to stderr)."
    echo "  -h, --help                Show this help message."
    echo ""
-   echo "Token resolution order:"
-   echo "  1) --key-file <path>   2) \$${TOKEN_ENV_VAR}   3) ${DEFAULT_TOKEN_FILE}"
+   echo "Token resolution order (--via direct only):"
+   echo "  1) --key-file <path>  2) \$${TOKEN_ENV_VAR}  3) ${TOKEN_BASENAME} in a secret dir"
    echo "  4) anonymous (no Authorization header)"
    echo "  The token must be an OAuth 2.0 JWT, not OAuth 1.0a consumer credentials."
+   echo ""
+   echo "Secret directories searched, in order (first match wins):"
+   printf '  %s\n' "${SECRET_SEARCH_DIRS[@]}"
+   echo ""
+   echo "Rate limits (LiftWing defines three tiers):"
+   echo "  anonymous / authenticated : 100 req/hour, SHARED across all llm-* models."
+   echo "                              An OAuth 2.0 JWT does NOT raise this -- it only"
+   echo "                              changes the gateway's ratelimit class."
+   echo "  known network (Toolforge) : effectively unlimited -> use --via tfproxy"
+   echo "  approved bot              : effectively unlimited -> request from the ML team"
+   echo "                              (phabricator #Machine-Learning-Team, ml@wikimedia.org)"
    echo ""
    echo "Exit codes:"
    echo "  0 success | 1 usage/local error | 2 API error | 3 rate limited (429)"
@@ -121,7 +150,29 @@ show_help() {
    echo "Examples:"
    echo "  ${SCRIPT_NAME} -q \"What is the capital of Maryland?\""
    echo "  ${SCRIPT_NAME} -f prompt.txt -m llm-qwen36-27b -o out.txt -v"
-   echo "  ${SCRIPT_NAME} -q \"Format this citation\" --system \"You output only wikitext.\""
+   echo "  ${SCRIPT_NAME} --via tfproxy --system-file cite-system.txt --temperature 0 \\"
+   echo "     --max-tokens 512 -q \"<the citation>\"      # bulk/agentic use"
+}
+
+#
+# Echoes the path of the first SECRET_SEARCH_DIRS entry containing $1, else "".
+#
+find_secret() {
+   local base="$1" dir
+   for dir in "${SECRET_SEARCH_DIRS[@]}"; do
+      if [[ -f "${dir}/${base}" ]]; then
+         echo "${dir}/${base}"
+         return 0
+      fi
+   done
+   return 0
+}
+
+#
+# Reads a secret file, stripping surrounding whitespace/newlines.
+#
+read_secret() {
+   tr -d '[:space:]' <"$1"
 }
 
 #
@@ -202,6 +253,10 @@ parse_arguments() {
             ANON="true"
             shift 1
             ;;
+         --via)
+            VIA="$2"
+            shift 2
+            ;;
          --user-agent)
             USER_AGENT="$2"
             shift 2
@@ -256,6 +311,45 @@ validate_input() {
       echo "Error: --max-retries must be a non-negative integer." >&2
       exit "${EXIT_USAGE}"
    fi
+   if [[ "${VIA}" != "direct" && "${VIA}" != "tfproxy" ]]; then
+      echo "Error: --via must be 'direct' or 'tfproxy' (got '${VIA}')." >&2
+      exit "${EXIT_USAGE}"
+   fi
+}
+
+#
+# Loads the tfproxy URL / auth header / secret into globals. Only called for
+# --via tfproxy.
+#
+load_tfproxy_config() {
+   local url_file header_file password_file
+   url_file=$(find_secret "${TFPROXY_URL_BASENAME}")
+   header_file=$(find_secret "${TFPROXY_HEADER_BASENAME}")
+   password_file=$(find_secret "${TFPROXY_PASSWORD_BASENAME}")
+
+   if [[ -z "${url_file}" || -z "${header_file}" || -z "${password_file}" ]]; then
+      echo "Error: --via tfproxy needs ${TFPROXY_URL_BASENAME}, ${TFPROXY_HEADER_BASENAME}" >&2
+      echo "       and ${TFPROXY_PASSWORD_BASENAME} in one of:" >&2
+      printf '         %s\n' "${SECRET_SEARCH_DIRS[@]}" >&2
+      exit "${EXIT_USAGE}"
+   fi
+
+   TFPROXY_URL=$(read_secret "${url_file}")
+   TFPROXY_AUTH_HEADER=$(read_secret "${header_file}")
+   TFPROXY_SECRET=$(read_secret "${password_file}")
+
+   # The stored URL already ends in "?target=". Tolerate either form rather than
+   # silently building "?target=?target=..." -- PHP then hands cURL a malformed
+   # URL and the proxy returns an opaque 502.
+   if [[ "${TFPROXY_URL}" != *"?target=" ]]; then
+      if [[ "${TFPROXY_URL}" == *"?"* ]]; then
+         TFPROXY_URL="${TFPROXY_URL}&target="
+      else
+         TFPROXY_URL="${TFPROXY_URL}?target="
+      fi
+   fi
+
+   log_info "Routing via Toolforge proxy (found config in $(dirname "${url_file}"))"
 }
 
 #
@@ -267,6 +361,13 @@ validate_input() {
 get_token() {
    local token=""
    TOKEN=""
+
+   # Toolforge egress is a "known network", which is LiftWing's unlimited tier by
+   # ORIGIN -- a JWT adds nothing there, so don't put the secret on the wire.
+   if [[ "${VIA}" == "tfproxy" ]]; then
+      log_info "Proxy mode: no bearer token needed (Toolforge is a known network)."
+      return 0
+   fi
 
    if [[ "${ANON}" == "true" ]]; then
       log_info "Anonymous mode forced (--anon); 100 requests/hour cap applies."
@@ -284,9 +385,11 @@ get_token() {
       token="${!TOKEN_ENV_VAR}"
       token="${token//[[:space:]]/}"
       log_info "Using token from \$${TOKEN_ENV_VAR}."
-   elif [[ -f "${DEFAULT_TOKEN_FILE}" ]]; then
-      token=$(tr -d '[:space:]' <"${DEFAULT_TOKEN_FILE}")
-      log_info "Using token from default keyfile: ${DEFAULT_TOKEN_FILE}"
+   elif [[ -n "$(find_secret "${TOKEN_BASENAME}")" ]]; then
+      local found
+      found=$(find_secret "${TOKEN_BASENAME}")
+      token=$(read_secret "${found}")
+      log_info "Using token from default keyfile: ${found}"
    else
       log_info "No token found; proceeding anonymously (100 requests/hour cap)."
       return 0
@@ -374,13 +477,23 @@ json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
 #
 make_api_request() {
    local payload="$1"
-   local url attempt=0 http_code retry_after delay
+   local url target attempt=0 http_code retry_after delay
    local body_file="${TMP_DIR}/body.json"
    local head_file="${TMP_DIR}/headers.txt"
    local cookie_jar="${TMP_DIR}/cookies.txt"
 
-   printf -v url "${API_URL_TEMPLATE}" "${MODEL}"
-   log_info "POST ${url}"
+   printf -v target "${API_URL_TEMPLATE}" "${MODEL}"
+   if [[ "${VIA}" == "tfproxy" ]]; then
+      # The proxy takes the destination in ?target=, URL-encoded exactly once.
+      local encoded
+      encoded=$(LWQ_TARGET="${target}" python3 -c \
+         'import os, urllib.parse, sys; sys.stdout.write(urllib.parse.quote(os.environ["LWQ_TARGET"], safe=""))')
+      url="${TFPROXY_URL}${encoded}"
+      log_info "POST ${target} (via Toolforge proxy)"
+   else
+      url="${target}"
+      log_info "POST ${url}"
+   fi
    log_info "Model: ${MODEL}, max_tokens: ${MAX_TOKENS}"
 
    while :; do
@@ -400,6 +513,9 @@ make_api_request() {
       )
       if [[ -n "${TOKEN}" ]]; then
          curl_args+=(-H "Authorization: Bearer ${TOKEN}")
+      fi
+      if [[ "${VIA}" == "tfproxy" ]]; then
+         curl_args+=(-H "${TFPROXY_AUTH_HEADER}: ${TFPROXY_SECRET}")
       fi
 
       http_code=$(printf '%s' "${payload}" | curl "${curl_args[@]}" 2>"${TMP_DIR}/curl.err")
@@ -446,6 +562,10 @@ make_api_request() {
             if ((attempt > MAX_RETRIES)); then
                echo "Error: server error (HTTP ${http_code}) after ${attempt} attempt(s)." >&2
                [[ -s "${body_file}" ]] && head -c 500 "${body_file}" >&2 && echo >&2
+               if [[ "${VIA}" == "tfproxy" && "${http_code}" == "502" ]]; then
+                  echo "       A 502 from the proxy means its server-side cURL failed -- most likely the" >&2
+                  echo "       25s upstream timeout. Lower --max-tokens (a citation needs ~512, not 4096)." >&2
+               fi
                exit "${EXIT_API}"
             fi
             delay=$((RETRY_BASE_DELAY ** attempt))
@@ -460,7 +580,13 @@ make_api_request() {
          401 | 403)
             echo "Error: authentication failed (HTTP ${http_code})." >&2
             [[ -s "${body_file}" ]] && head -c 500 "${body_file}" >&2 && echo >&2
-            echo "       The token must be an OAuth 2.0 access token (JWT). Use --anon to query without one." >&2
+            if [[ "${VIA}" == "tfproxy" ]]; then
+               echo "       In proxy mode a 403 is the PROXY rejecting the shared secret," >&2
+               echo "       not LiftWing. Check ${TFPROXY_PASSWORD_BASENAME} against the value" >&2
+               echo "       that the proxy expects." >&2
+            else
+               echo "       The token must be an OAuth 2.0 access token (JWT). Use --anon to query without one." >&2
+            fi
             exit "${EXIT_API}"
             ;;
          *)
@@ -590,6 +716,10 @@ main() {
    TOKEN=""
    RAW_OUTPUT=""
    ANON="false"
+   VIA="direct"
+   TFPROXY_URL=""
+   TFPROXY_AUTH_HEADER=""
+   TFPROXY_SECRET=""
    USER_AGENT="${DEFAULT_USER_AGENT}"
    MAX_RETRIES="${DEFAULT_MAX_RETRIES}"
    TIMEOUT="${DEFAULT_TIMEOUT}"
@@ -598,6 +728,10 @@ main() {
 
    parse_arguments "$@"
    validate_input
+
+   if [[ "${VIA}" == "tfproxy" ]]; then
+      load_tfproxy_config
+   fi
 
    TMP_DIR=$(mktemp -d -t liftwing-query.XXXXXX) || {
       echo "Error: could not create temporary directory." >&2
