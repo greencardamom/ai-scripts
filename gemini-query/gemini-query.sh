@@ -59,6 +59,9 @@ show_help() {
   echo "  -or, --output-raw <path>  Optional path to save the raw JSON response from the API."
   echo "  -v, --verbose             Enable verbose logging (outputs 'Info:' messages to stderr)."
   echo "  -g, --ground              Enable Google Search grounding (live web search)."
+  echo "  -tb, --thinking-budget <n> Cap reasoning tokens. 0 disables thinking, -1 is dynamic."
+  echo "                            Unset leaves the model default. Thinking tokens bill at the"
+  echo "                            OUTPUT rate, so an uncapped budget can dominate the invoice."
   echo "  -h, --help                Show this help message."
   echo ""
   echo "API Key:"
@@ -125,6 +128,15 @@ parse_arguments() {
           -g|--ground)
               GROUND="true"
               shift 1
+              ;;
+          -tb|--thinking-budget)
+              # Validated here so it can be interpolated straight into the JSON payload.
+              if ! [[ "$2" =~ ^-?[0-9]+$ ]]; then
+                  echo "Error: --thinking-budget requires an integer (0 disables, -1 dynamic)." >&2
+                  exit 1
+              fi
+              THINKING_BUDGET="$2"
+              shift 2
               ;;
           -h|--help)
               show_help
@@ -222,6 +234,13 @@ generate_payload() {
   if [[ "${GROUND}" == "true" ]]; then
     tools_json='  "tools": [ { "google_search": {} } ],'
   fi
+  # Optional reasoning cap when -tb/--thinking-budget is set. Thinking tokens are billed at
+  # the OUTPUT rate but are reported separately (usageMetadata.thoughtsTokenCount), so an
+  # uncapped budget is easy to miss in token accounting. Empty when off -> blank line, valid JSON.
+  local thinking_json=""
+  if [[ -n "${THINKING_BUDGET}" ]]; then
+    thinking_json="    \"thinkingConfig\": { \"thinkingBudget\": ${THINKING_BUDGET} },"
+  fi
   # Prepare the JSON payload for the API request using a heredoc
   cat <<EOF
 {
@@ -234,6 +253,7 @@ generate_payload() {
   ],
 ${tools_json}
   "generationConfig": {
+${thinking_json}
     "temperature": 0.5,
     "topP": 0.95,
     "topK": 40,
@@ -342,6 +362,7 @@ main() {
   local OUTPUT_FILE=""
   local VERBOSE="false"
   local GROUND="false"
+  local THINKING_BUDGET=""   # empty -> omit thinkingConfig, leave the model default
 
   parse_arguments "$@"
   validate_input
