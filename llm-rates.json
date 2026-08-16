@@ -1,0 +1,117 @@
+{
+  "_README": [
+    "Single source of truth for LLM token prices. Everything that computes a cost reads THIS",
+    "file -- do not hardcode a rate anywhere else. Symlinked to ~/scripts/llm-rates.json, which",
+    "is the stable path consumers reference (same convention as ~/scripts/<tool>.sh).",
+    "",
+    "Rates are US dollars per 1,000,000 tokens, LIST price (before any account discount).",
+    "Consumers divide by 1e6 themselves.",
+    "",
+    "COST HIERARCHY -- prefer, in order:",
+    "  1. The cost the provider reports for the actual call. xAI returns usage.cost_in_usd_ticks",
+    "     (1 USD = 1e10 ticks); it is exact and already accounts for cache discounts and",
+    "     promotions that no static table can see. Where a provider does this, the entries",
+    "     below are a CROSS-CHECK only -- diverging from them means the table is stale.",
+    "  2. Rates from this file, for providers that do not report per-call cost (Gemini).",
+    "  3. Nothing. If a model is absent here, report cost as UNKNOWN. Never 0.0 and never a",
+    "     guessed default -- a confident wrong number is worse than a missing one.",
+    "",
+    "EVERY entry carries 'source' and 'verified'. A rate with no provenance is a guess.",
+    "This file exists because a consumer ran for months on a superseded model's rates, which",
+    "had been documented as 'reverse-solved from the log'. That is circular: the log was",
+    "written by those same constants, so nothing in it could ever contradict them. The real",
+    "rates were 20x and 30x higher. Only a comparison against the actual invoice caught it.",
+    "",
+    "So: when you add or change a rate, cite where the number came from, and prefer an invoice",
+    "over documentation. Docs describe list price; an invoice describes what you were charged.",
+    "Re-verify periodically -- 'verified' going stale is itself a signal."
+  ],
+  "schema": 1,
+  "updated": "2026-08-15",
+
+  "providers": {
+
+    "gemini": {
+      "_cost_source": "table",
+      "_note": "Gemini returns no per-call cost, so these rates ARE the accounting. Verify against the GCP billing console (Billing -> Reports, group by SKU) rather than the pricing page.",
+      "models": {
+        "gemini-3.5-flash": {
+          "input": 1.50,
+          "output": 9.00,
+          "cached_input": 0.15,
+          "source": "GCP invoice 2026-07 (Jul 1-31). SKU 63AC-2BA8-3F85 input: $1036.37 list / 690,914,771 tok = $1.50/M. SKU F9BE-D8E8-69E9 output: $906.37 / 100,707,487 tok = $9.00/M. SKU AA25-11AF-C82D cached input: $3.51 / 23,430,389 tok = $0.15/M.",
+          "verified": "2026-08-15",
+          "notes": "LIST price. That invoice also carried an 'Other savings' line of ~15.6% (effective $1.266/$7.631). Rates here are deliberately list, so a promotional discount lapsing cannot silently understate cost. thoughtsTokenCount bills at the OUTPUT rate and is reported OUTSIDE candidatesTokenCount -- add it in, or output is undercounted (measured 8.67x in Jul 2026)."
+        }
+      }
+    },
+
+    "xai": {
+      "_cost_source": "provider",
+      "_note": "PREFER usage.cost_in_usd_ticks from the response (1 USD = 1e10 ticks). It is the exact amount charged. These rates are a cross-check to catch table drift -- xai-query.sh warns when the two diverge. Pricing is TIERED: at or above tier_threshold prompt tokens, BOTH input and output rates double for the whole request.",
+      "models": {
+        "grok-4.20-0309-non-reasoning": {
+          "input": 1.25, "output": 2.50,
+          "input_above_tier": 2.50, "output_above_tier": 5.00,
+          "tier_threshold": 200000, "context": 1000000,
+          "source": "https://docs.x.ai/docs/models",
+          "verified": "2026-08-15",
+          "notes": "Default for page-parse workloads: 1M context, cheapest tier, and emits no reasoning tokens (verified 0 on a live call 2026-08-15)."
+        },
+        "grok-4.20-0309-reasoning": {
+          "input": 1.25, "output": 2.50,
+          "input_above_tier": 2.50, "output_above_tier": 5.00,
+          "tier_threshold": 200000, "context": 1000000,
+          "source": "https://docs.x.ai/docs/models",
+          "verified": "2026-08-15",
+          "notes": "Reasoning tokens bill at the OUTPUT rate."
+        },
+        "grok-4.20-multi-agent-0309": {
+          "input": 1.25, "output": 2.50,
+          "input_above_tier": 2.50, "output_above_tier": 5.00,
+          "tier_threshold": 200000, "context": 1000000,
+          "source": "https://docs.x.ai/docs/models",
+          "verified": "2026-08-15",
+          "notes": "reasoning_effort selects how many agents collaborate, not reasoning depth. Reasoning cannot be disabled."
+        },
+        "grok-4.3": {
+          "input": 1.25, "output": 2.50,
+          "input_above_tier": 2.50, "output_above_tier": 5.00,
+          "tier_threshold": 200000, "context": 1000000,
+          "source": "https://docs.x.ai/docs/models",
+          "verified": "2026-08-15",
+          "notes": "Not listed among reasoning-capable models, but that is absence of evidence -- confirm reasoning_tokens is 0 on a live call before relying on it."
+        },
+        "grok-4.6": {
+          "input": 2.00, "output": 6.00,
+          "input_above_tier": 4.00, "output_above_tier": 12.00,
+          "tier_threshold": 200000, "context": 500000,
+          "source": "https://docs.x.ai/docs/models",
+          "verified": "2026-08-15",
+          "notes": "REASONING CANNOT BE DISABLED (docs.x.ai/docs/guides/reasoning). reasoning_effort accepts low|medium|high|xhigh. Avoid for bulk token-heavy work unless the reasoning is worth output-rate billing."
+        },
+        "grok-4.5": {
+          "input": 2.00, "output": 6.00,
+          "input_above_tier": 4.00, "output_above_tier": 12.00,
+          "tier_threshold": 200000, "context": 500000,
+          "source": "https://docs.x.ai/docs/models",
+          "verified": "2026-08-15",
+          "notes": "REASONING CANNOT BE DISABLED. reasoning_effort accepts low|medium|high."
+        },
+        "grok-build-0.1": {
+          "input": 1.00, "output": 2.00,
+          "input_above_tier": 2.00, "output_above_tier": 4.00,
+          "tier_threshold": 200000, "context": 256000,
+          "source": "https://docs.x.ai/docs/models",
+          "verified": "2026-08-15"
+        }
+      }
+    }
+  },
+
+  "_unverified": {
+    "_note": "Parked here rather than in providers{} so nothing can read them by accident. These are the old hardcoded guesses from pages.nim, kept only as a record of what was assumed. Do NOT promote one without an invoice line to cite.",
+    "gemini-flash-lite": { "input": 0.075, "output": 0.30, "source": "unverified guess inherited from pages.nim" },
+    "gemini-pro": { "input_le_128k": 1.25, "output_le_128k": 5.00, "input_gt_128k": 2.50, "output_gt_128k": 10.00, "source": "unverified guess inherited from pages.nim" }
+  }
+}

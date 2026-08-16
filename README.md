@@ -15,6 +15,28 @@ the stable `~/scripts/<tool>.sh` path and never the repo location directly.
 | `claude-query/` | Anthropic Claude | `--via api` (metered) or `--via claudecode` (Claude Code subscription) |
 | `antigravity-query/` | Antigravity (`agy`) | flat-rate proxy to Gemini/Claude/GPT; exit `3`=5h cap, `4`=weekly cap |
 | `liftwing-query/` | Wikimedia LiftWing | free, OpenAI-shaped; `--via tfproxy` for unlimited rate; exit `3`=rate limited |
+| `xai-query/` | xAI Grok | metered, OpenAI-shaped; `--usage-file` emits token/cost JSON; exit `3`=rate limited |
+
+## Token prices — `llm-rates.json`
+Every consumer that computes a cost reads **`llm-rates.json`** (symlinked to `~/scripts/llm-rates.json`).
+Do not hardcode a rate anywhere else.
+
+The cost hierarchy, in order of preference:
+1. **The cost the provider reports for the actual call.** xAI returns `usage.cost_in_usd_ticks`
+   (1 USD = 1e10 ticks) — exact, and it accounts for cache discounts a static table cannot see.
+   On the first live call the table was **1.93x** off for this reason. Where a provider does
+   this, the file is only a drift detector.
+2. **Rates from the file**, for providers with no per-call cost (Gemini).
+3. **Nothing** — if a model is absent, report cost as unknown. Never `0.0`, never a guessed
+   default. A confident wrong number is worse than a missing one, and the daemons abort at
+   startup rather than run un-priced.
+
+Every entry carries `source` and `verified`. This file exists because a consumer once ran for
+months on a superseded model's rates, recorded as "reverse-solved from the log" — circular, since
+the log had been written by those same constants, so nothing in it could ever contradict them.
+The real rates were 20x and 30x higher.
+**Only comparing against the actual invoice caught it** — so prefer an invoice over a docs page,
+and re-verify periodically. Deduplication alone would not have prevented this; provenance might.
 
 ## Conventions
 - **Secrets** are never stored here — each script reads its key from a keyfile (e.g. `-k <keyfile>`).
@@ -31,6 +53,14 @@ the stable `~/scripts/<tool>.sh` path and never the repo location directly.
 - **Secrets are located by search, not hardcoded path.** `liftwing-query.sh` looks in
   `~/.config/wikiget/secrets`, `~/scripts/secrets`, then `~/toolforge/scripts/secrets` (first match
   wins), so the *same file* runs unmodified on acre and sheep — no per-host fork to maintain.
+- **xAI pricing is tiered at 200k prompt tokens** — crossing it *doubles* both the input and
+  output rate for the entire request, so a 210k-token prompt costs more than twice a 190k one.
+  `xai-query.sh` reports which tier a call landed in. Its default model
+  (`grok-4.20-0309-non-reasoning`) is chosen deliberately: 1M context, cheapest tier, and no
+  reasoning tokens. On `grok-4.6`/`grok-4.5`/`grok-4.20-multi-agent`, xAI documents that
+  **reasoning cannot be disabled** — those reasoning tokens bill at the output rate and are
+  reported *outside* `completion_tokens`, so naive accounting understates the bill. The script
+  folds them in and warns; see `--usage-file` for the normalized record.
 - **Symlinks:** `~/scripts/<tool>.sh -> <repo path>/<tool>/<tool>.sh`, created per host so each
   resolves against that host's own `$HOME`.
 - **Consumers reference `~/scripts/<tool>.sh`** (the stable symlink), so moving files within the repo never breaks them.
