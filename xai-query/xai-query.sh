@@ -75,6 +75,12 @@ SECRET_SEARCH_DIRS=(
 # Basename looked up inside SECRET_SEARCH_DIRS
 TOKEN_BASENAME="xaiapi.key"
 API_URL="https://api.x.ai/v1/chat/completions"
+# Deferred mode: submit, then poll for the result. Avoids holding a connection open for the
+# many minutes a large prompt takes, which is what makes --max-time fire (and, because an
+# abandoned request may still be billed with no usage block returned, cost money invisibly).
+DEFERRED_URL="https://api.x.ai/v1/chat/deferred-completion"
+DEFAULT_DEFERRED_INTERVAL=10
+DEFAULT_DEFERRED_MAX_WAIT=1800
 # Default model: non-reasoning, 1M context, cheapest tier. See the header note.
 DEFAULT_MODEL="grok-4.20-0309-non-reasoning"
 DEFAULT_MAX_TOKENS=65536
@@ -157,6 +163,18 @@ show_help() {
    echo "  -or, --output-raw <path>     Save the raw JSON response from the API."
    echo "       --usage-file <path>     Save normalized token/cost JSON (for daily reports)."
    echo "       --json-output           Print the raw API JSON instead of extracted text."
+   echo ""
+   echo "Deferred mode (recommended for large prompts):"
+   echo "      --deferred            Submit the request, then poll for the result instead of"
+   echo "                            holding one long connection. Large prompts can take many"
+   echo "                            minutes; a --timeout abort may still be billed and returns"
+   echo "                            no usage block, so the charge is invisible. Deferred avoids"
+   echo "                            that entirely. The result carries the full usage block."
+   echo "      --deferred-interval <s>  Seconds between polls (Default: ${DEFAULT_DEFERRED_INTERVAL})."
+   echo "      --deferred-max-wait <s>  Give up after this long (Default: ${DEFAULT_DEFERRED_MAX_WAIT})."
+   echo "                            NOTE: a deferred result is retained 24h and can be fetched"
+   echo "                            EXACTLY ONCE. Use -or to persist it; a result lost after"
+   echo "                            retrieval is paid for and unrecoverable."
    echo ""
    echo "Connection / auth:"
    echo "  -k, --key-file <path>     File containing the xAI API key."
@@ -284,6 +302,18 @@ parse_arguments() {
          --json-output)
             JSON_OUTPUT="true"
             shift 1
+            ;;
+         --deferred)
+            DEFERRED="true"
+            shift 1
+            ;;
+         --deferred-interval)
+            DEFERRED_INTERVAL="$2"
+            shift 2
+            ;;
+         --deferred-max-wait)
+            DEFERRED_MAX_WAIT="$2"
+            shift 2
             ;;
          -k | --key-file)
             TOKEN_FILE="$2"
@@ -441,6 +471,7 @@ generate_payload() {
       XQ_TOP_P="${TOP_P}" \
       XQ_JSON_MODE="${JSON_MODE}" \
       XQ_REASONING="${REASONING_EFFORT}" \
+      XQ_DEFERRED="${DEFERRED}" \
       python3 -c '
 import json, os, sys
 
@@ -475,6 +506,8 @@ if os.environ.get("XQ_JSON_MODE") == "true":
 reasoning = os.environ.get("XQ_REASONING", "")
 if reasoning:
     payload["reasoning_effort"] = reasoning
+if os.environ.get("XQ_DEFERRED") == "true":
+    payload["deferred"] = True
 
 json.dump(payload, sys.stdout, ensure_ascii=False, indent=2)
 '
@@ -490,12 +523,99 @@ get_header() {
 }
 
 #
+# Deferred mode. Submit once, then poll. Each HTTP call is short, so no long-held connection
+# can time out mid-generation. Sets the global RAW_OUTPUT.
+#
+# The result is retained 24h and retrievable EXACTLY ONCE, so the body is written to
+# OUTPUT_RAW_FILE the moment it arrives -- before any parsing that could fail. A result lost
+# after retrieval has been paid for and cannot be fetched again.
+#
+run_deferred() {
+   local payload="$1"
+   local body_file="${TMP_DIR}/body.json"
+   local req_id waited=0 http_code
+
+   http_code=$(printf '%s' "${payload}" | curl -sS -X POST "${API_URL}" \
+      -H "Content-Type: application/json" -H "Authorization: Bearer ${TOKEN}" \
+      -H "User-Agent: ${USER_AGENT}" -o "${body_file}" -w '%{http_code}' \
+      --max-time 120 -d @- 2>"${TMP_DIR}/curl.err")
+
+   if [[ "${http_code}" != 2* ]]; then
+      echo "Error: deferred submit failed (HTTP ${http_code})." >&2
+      [[ -s "${body_file}" ]] && head -c 500 "${body_file}" >&2 && echo >&2
+      exit "${EXIT_API}"
+   fi
+
+   req_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("request_id",""))' \
+      "${body_file}" 2>/dev/null)
+   if [[ -z "${req_id}" ]]; then
+      echo "Error: deferred submit returned no request_id." >&2
+      [[ -s "${body_file}" ]] && head -c 500 "${body_file}" >&2 && echo >&2
+      exit "${EXIT_API}"
+   fi
+   log_info "Deferred request_id: ${req_id} (polling every ${DEFERRED_INTERVAL}s, max ${DEFERRED_MAX_WAIT}s)"
+
+   while :; do
+      sleep "${DEFERRED_INTERVAL}"
+      waited=$((waited + DEFERRED_INTERVAL))
+
+      http_code=$(curl -sS -X GET "${DEFERRED_URL}/${req_id}" \
+         -H "Authorization: Bearer ${TOKEN}" -H "User-Agent: ${USER_AGENT}" \
+         -o "${body_file}" -w '%{http_code}' --max-time 120 2>"${TMP_DIR}/curl.err")
+
+      case "${http_code}" in
+         200)
+            # Persist FIRST: this result can never be fetched again.
+            if [[ -n "${OUTPUT_RAW_FILE}" ]]; then
+               cp "${body_file}" "${OUTPUT_RAW_FILE}"
+               log_info "Raw response saved to ${OUTPUT_RAW_FILE} (${waited}s)"
+            else
+               echo "Warning: deferred result retrieved without --output-raw; it cannot be" >&2
+               echo "         fetched again. Use -or to persist what you paid for." >&2
+            fi
+            RAW_OUTPUT=$(<"${body_file}")
+            log_info "Deferred result ready after ${waited}s"
+            return 0
+            ;;
+         202)
+            log_info "Still processing (${waited}s elapsed)..."
+            ;;
+         404)
+            echo "Error: request_id ${req_id} not found (already retrieved, or expired)." >&2
+            echo "       Deferred results are single-use and kept 24h." >&2
+            exit "${EXIT_API}"
+            ;;
+         429)
+            log_info "Rate limited while polling; backing off"
+            sleep "$((DEFERRED_INTERVAL * 2))"
+            waited=$((waited + DEFERRED_INTERVAL * 2))
+            ;;
+         *)
+            log_info "Poll returned HTTP ${http_code}; continuing"
+            ;;
+      esac
+
+      if ((waited >= DEFERRED_MAX_WAIT)); then
+         echo "Error: deferred result not ready after ${waited}s." >&2
+         echo "       The work is still queued and will be billed. Retrieve it within 24h with:" >&2
+         echo "       curl -H \"Authorization: Bearer \$KEY\" ${DEFERRED_URL}/${req_id}" >&2
+         exit "${EXIT_API}"
+      fi
+   done
+}
+
+#
 # POSTs the payload, retrying on 429 and 5xx. Sets the global RAW_OUTPUT.
 # Sets a global rather than echoing so the EXIT_* exits below terminate the
 # script instead of just a command-substitution subshell.
 #
 make_api_request() {
    local payload="$1"
+
+   if [[ "${DEFERRED}" == "true" ]]; then
+      run_deferred "${payload}"
+      return 0
+   fi
    local attempt=0 http_code retry_after delay
    local body_file="${TMP_DIR}/body.json"
    local head_file="${TMP_DIR}/headers.txt"
@@ -789,6 +909,9 @@ main() {
    OUTPUT_RAW_FILE=""
    USAGE_FILE=""
    JSON_OUTPUT="false"
+   DEFERRED="false"
+   DEFERRED_INTERVAL="${DEFAULT_DEFERRED_INTERVAL}"
+   DEFERRED_MAX_WAIT="${DEFAULT_DEFERRED_MAX_WAIT}"
    TOKEN_FILE=""
    TOKEN=""
    RAW_OUTPUT=""
