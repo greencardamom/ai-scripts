@@ -422,11 +422,14 @@ read_text_input() {
          echo "Error: ${label} file '${path}' not found." >&2
          exit "${EXIT_USAGE}"
       fi
-      text=$(<"${path}")
-      if [[ -z "${text//[[:space:]]/}" ]]; then
+      # Test the FILE, not the variable. "${text//[[:space:]]/}" is O(n^2) in bash -- 25KB
+      # takes 10s, 100KB takes 175s. Harmless at LiftWing's 16-32k context, but it silently
+      # becomes a multi-minute hang the moment a larger prompt is pointed at this script.
+      if ! grep -q '[^[:space:]]' "${path}"; then
          echo "Error: ${label} file '${path}' is empty or whitespace only." >&2
          exit "${EXIT_USAGE}"
       fi
+      text=$(<"${path}")
    else
       text="${direct}"
    fi

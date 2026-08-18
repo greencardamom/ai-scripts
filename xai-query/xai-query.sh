@@ -440,11 +440,14 @@ read_text_input() {
          echo "Error: ${label} file '${path}' not found." >&2
          exit "${EXIT_USAGE}"
       fi
-      text=$(<"${path}")
-      if [[ -z "${text//[[:space:]]/}" ]]; then
+      # Test the FILE, not the variable. "${text//[[:space:]]/}" is O(n^2) in bash: 25KB took
+      # 10s, 100KB took 175s, and a 593KB page-parse prompt would spend ~100 MINUTES here
+      # before the request is even sent. grep is linear.
+      if ! grep -q '[^[:space:]]' "${path}"; then
          echo "Error: ${label} file '${path}' is empty or whitespace only." >&2
          exit "${EXIT_USAGE}"
       fi
+      text=$(<"${path}")
    else
       text="${direct}"
    fi
