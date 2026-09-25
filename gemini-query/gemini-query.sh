@@ -2,10 +2,11 @@
 
 #
 # Script: gemini-query.sh
-# Purpose: CLI utility to query Gemini
+# Purpose: CLI utility to query Gemini (Supports Context Caching & Session Memory)
 # Repo: n/a
 # Created: July 2025
-# Author: GreenC + Google Gemini Advanced 2.5 Pro
+# Modified: April 2026
+# Author: GreenC + Google Gemini
 # Formatting: shfmt -i 3 -ci gemini-query.sh
 #
 
@@ -37,6 +38,25 @@ SCRIPT_NAME="gemini-query.sh"
 API_KEY_ENV_VAR="GEMINI_API_KEY"
 # The default model to use if not specified via the --model flag
 DEFAULT_MODEL="gemini-2.5-pro"
+SESSION_DIR="${HOME}/.gemini_sessions"
+DEFAULT_SESSION="default"
+# generationConfig default. Global so usage() can quote it; main() seeds TEMPERATURE from it.
+TEMPERATURE_DEFAULT="0.5"
+# Secret directories searched, in order, when --key-file is not given and the env var is
+# unset. Hosts keep secrets in different places; searching a list keeps ONE script
+# identical everywhere instead of a per-host fork.
+SECRET_SEARCH_DIRS=(
+   "${HOME}/scripts/secrets"
+   "${HOME}/.config/wikiget/secrets"
+   "${HOME}/toolforge/scripts/secrets"
+)
+# Basenames looked up inside SECRET_SEARCH_DIRS. Two spellings are in use across the
+# fleet for the same key (verified byte-identical), so both are searched rather than
+# renaming files on five hosts.
+KEY_BASENAMES=(
+   "googlegemini.apikey"
+   "googlegemini.key"
+)
 
 # --- Function Definitions ---
 
@@ -51,6 +71,14 @@ show_help() {
   echo "Options:"
   echo "  -q, --query <string>      A string containing the query to send."
   echo "  -f, --file <path>         Path to a file containing the query."
+  echo "  -s, --session <name>      Name of the conversation memory session (defaults to '${DEFAULT_SESSION}')."
+  echo "  --clear                   Clear the history for the specified session. Exits if no"
+  echo "                            query follows; otherwise clears, then runs the query."
+  echo "  -c, --cache <name>        Name of the Context Cache to query (e.g. cachedContents/xxxx)."
+  echo "  -g, --ground              Enable Google Search grounding for the query."
+  echo "  -t, --temperature <n>     Sampling temperature. Defaults to ${TEMPERATURE_DEFAULT}."
+  echo "  --json-output             Ask the model for application/json (sets responseMimeType)."
+  echo "  --response-mime-type <s>  Set responseMimeType explicitly. Unset leaves it off."
   echo "  -o, --output-file <path>  Optional path to save the final text output."
   echo "  -k, --key-file <path>     Path to a file containing your Google AI API key."
   echo "                            (Overrides the ${API_KEY_ENV_VAR} environment variable if both are set)."
@@ -58,7 +86,6 @@ show_help() {
   echo "  -op, --output-payload <path> Optional path to save the JSON payload sent to the API."
   echo "  -or, --output-raw <path>  Optional path to save the raw JSON response from the API."
   echo "  -v, --verbose             Enable verbose logging (outputs 'Info:' messages to stderr)."
-  echo "  -g, --ground              Enable Google Search grounding (live web search)."
   echo "  -tb, --thinking-budget <n> Cap reasoning tokens. 0 disables thinking, -1 is dynamic."
   echo "                            Unset leaves the model default. Thinking tokens bill at the"
   echo "                            OUTPUT rate, so an uncapped budget can dominate the invoice."
@@ -70,10 +97,13 @@ show_help() {
   echo "  You must provide the key via one of these two methods."
   echo ""
   echo "Examples:"
-  echo "  ${SCRIPT_NAME} -q \"What is the capital of Maryland?\" -k ./api.key -o result.txt"
-  echo "  ${SCRIPT_NAME} -q \"Tell me a joke\" -k ./api.key -m gemini-2.0-flash-latest --output-raw /tmp/joke.raw.json -v"
-  echo "  export ${API_KEY_ENV_VAR}='your_api_key_here'"
-  echo "  ${SCRIPT_NAME} --file ./my_question.txt"
+  echo "  # Standard Query"
+  echo "    ${SCRIPT_NAME} -q \"What is the capital of Maryland?\" -k ./api.key"
+  echo ""
+  echo "  # Querying a Cache"
+  echo "    Use gemini-files.sh to create a Context Cache (upload once), then query it repeatedly"
+  echo "    ${SCRIPT_NAME} --cache cachedContents/abc12345 --query \"Find the connection between...\""
+  echo "    ${SCRIPT_NAME} --cache cachedContents/abc12345 --query \"Find the location of...\""
   echo ""
   echo "Note: You must provide either --query or --file."
 }
@@ -101,6 +131,47 @@ parse_arguments() {
               QUERY_FILE="$2"
               shift 2
               ;;
+          -s|--session)
+              SESSION_NAME="$2"
+              shift 2
+              ;;
+          --clear)
+              CLEAR_SESSION="true"
+              shift 1
+              ;;
+          -c|--cache)
+              CACHE_NAME="$2"
+              shift 2
+              ;;
+          -g|--ground)
+              GROUND="true"
+              shift 1
+              ;;
+          -t|--temperature)
+              if ! [[ "$2" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+                  echo "Error: --temperature requires a number (e.g. 0.2)." >&2
+                  exit 1
+              fi
+              TEMPERATURE="$2"
+              shift 2
+              ;;
+          --json-output)
+              RESPONSE_MIME="application/json"
+              shift 1
+              ;;
+          --response-mime-type)
+              RESPONSE_MIME="$2"
+              shift 2
+              ;;
+          -tb|--thinking-budget)
+              # Validated here so it can be interpolated straight into the JSON payload.
+              if ! [[ "$2" =~ ^-?[0-9]+$ ]]; then
+                  echo "Error: --thinking-budget requires an integer (0 disables, -1 dynamic)." >&2
+                  exit 1
+              fi
+              THINKING_BUDGET="$2"
+              shift 2
+              ;;
           -o|--output-file)
               OUTPUT_FILE="$2"
               shift 2
@@ -125,19 +196,6 @@ parse_arguments() {
               VERBOSE="true"
               shift 1
               ;;
-          -g|--ground)
-              GROUND="true"
-              shift 1
-              ;;
-          -tb|--thinking-budget)
-              # Validated here so it can be interpolated straight into the JSON payload.
-              if ! [[ "$2" =~ ^-?[0-9]+$ ]]; then
-                  echo "Error: --thinking-budget requires an integer (0 disables, -1 dynamic)." >&2
-                  exit 1
-              fi
-              THINKING_BUDGET="$2"
-              shift 2
-              ;;
           -h|--help)
               show_help
               exit 0
@@ -149,6 +207,11 @@ parse_arguments() {
               ;;
       esac
   done
+
+  # Set default session if not provided
+  if [[ -z "${SESSION_NAME}" ]]; then
+      SESSION_NAME="${DEFAULT_SESSION}"
+  fi
 }
 
 #
@@ -173,6 +236,29 @@ validate_input() {
 # Retrieves the API key from the file or environment variable.
 # Returns the API key.
 #
+#
+# Echoes the path of the first KEY_BASENAMES file found in SECRET_SEARCH_DIRS, else "".
+#
+find_secret() {
+  local dir base
+  for dir in "${SECRET_SEARCH_DIRS[@]}"; do
+      for base in "${KEY_BASENAMES[@]}"; do
+          if [[ -f "${dir}/${base}" ]]; then
+              echo "${dir}/${base}"
+              return 0
+          fi
+      done
+  done
+  return 0
+}
+
+#
+# Reads a secret file, stripping surrounding whitespace/newlines.
+#
+read_secret() {
+  tr -d '[:space:]' <"$1"
+}
+
 get_api_key() {
   local key
   # Prioritize API key from file
@@ -188,79 +274,108 @@ get_api_key() {
       key="${!API_KEY_ENV_VAR}"
       log_info "Using API key from ${API_KEY_ENV_VAR} environment variable."
   else
+      # Last resort: look for a known keyfile in the standard secret dirs.
+      local found
+      found=$(find_secret)
+      if [[ -n "${found}" ]]; then
+          key=$(read_secret "${found}")
+          log_info "Using API key from default keyfile: ${found}"
+      fi
+  fi
+
+  if [[ -z "${key}" ]]; then
       echo "Error: API key not found." >&2
-      echo "Please provide the API key via the --key-file option or by setting the ${API_KEY_ENV_VAR} environment variable." >&2
-      echo "" >&2
-      show_help
+      echo "Supply --key-file <path>, set ${API_KEY_ENV_VAR}, or place one of:" >&2
+      printf '  %s\n' "${KEY_BASENAMES[@]}" >&2
+      echo "in one of:" >&2
+      printf '  %s\n' "${SECRET_SEARCH_DIRS[@]}" >&2
       exit 1
   fi
-  echo "${key}"
+  # Set a global rather than echoing: the caller used to do api_key=$(get_api_key), and an
+  # exit inside that command substitution only killed the subshell -- the script carried on
+  # with an empty key and failed later at the API instead of here.
+  API_KEY="${key}"
 }
 
 #
-# Prepares the query text by reading from a file or using the direct string.
-# Returns the JSON-escaped query text.
+# Reads query from file or variable safely.
 #
-prepare_query() {
-  local prepared_query
+get_raw_query() {
   if [[ -n "${QUERY_FILE}" ]]; then
     if [ ! -f "${QUERY_FILE}" ]; then
       echo "Error: File '${QUERY_FILE}' not found." >&2
       exit 1
     fi
-    log_info "Reading query from file: ${QUERY_FILE}"
-    # Read and escape query from file
-    prepared_query=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().rstrip("\n")))' < "${QUERY_FILE}")
-
-    if [ -z "${prepared_query}" ] || [ "${prepared_query}" == '""' ]; then
-      echo "Error: File '${QUERY_FILE}' is empty or contains only whitespace." >&2
-      exit 1
-    fi
-  else # Input is a direct query string
-    log_info "Input treated as direct query."
-    prepared_query=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "${QUERY_STRING}")
+    cat "${QUERY_FILE}"
+  else
+    printf "%s" "${QUERY_STRING}"
   fi
-  echo "${prepared_query}"
 }
 
 #
-# Generates the JSON payload.
+# Generates the JSON payload using Python, managing the session history file.
 #
 generate_payload() {
-  local query_text="$1"
-  # Optional Google Search grounding (live web search) when -g/--ground is set.
-  # Empty when off -> just whitespace in the JSON (valid).
-  local tools_json=""
+  local session_file="$1"
+  local raw_query
+  raw_query=$(get_raw_query)
+
+  local cache_field=""
+  if [[ -n "${CACHE_NAME}" ]]; then
+      log_info "Using Context Cache: ${CACHE_NAME}"
+      cache_field="\"cachedContent\": \"${CACHE_NAME}\","
+  fi
+
+  # Google Search grounding. Kept from the pre-merge gemini-query.sh, where it injected
+  # this same tools key into a bash heredoc; callers are annomain.awk -g, genmeta.py
+  # --ground, clustermerge.py and monitor_gemini-api.awk.
+  local tools_field=""
   if [[ "${GROUND}" == "true" ]]; then
-    tools_json='  "tools": [ { "google_search": {} } ],'
+      log_info "Enabling Google Search grounding"
+      tools_field="\"tools\": [ { \"google_search\": {} } ],"
   fi
-  # Optional reasoning cap when -tb/--thinking-budget is set. Thinking tokens are billed at
-  # the OUTPUT rate but are reported separately (usageMetadata.thoughtsTokenCount), so an
-  # uncapped budget is easy to miss in token accounting. Empty when off -> blank line, valid JSON.
-  local thinking_json=""
-  if [[ -n "${THINKING_BUDGET}" ]]; then
-    thinking_json="    \"thinkingConfig\": { \"thinkingBudget\": ${THINKING_BUDGET} },"
-  fi
-  # Prepare the JSON payload for the API request using a heredoc
-  cat <<EOF
-{
-  "contents": [
-    {
-      "parts": [
-        { "text": ${query_text} }
-      ]
-    }
-  ],
-${tools_json}
-  "generationConfig": {
-${thinking_json}
-    "temperature": 0.5,
-    "topP": 0.95,
-    "topK": 40,
-    "maxOutputTokens": 65536
-  }
-}
-EOF
+
+  printf "%s" "${raw_query}" | python3 -c '
+import json, sys, os
+
+session_file = sys.argv[1]
+cache_string = sys.argv[2]
+query = sys.stdin.read()
+
+messages = []
+if os.path.exists(session_file):
+    try:
+        with open(session_file, "r") as f:
+            messages = json.load(f)
+    except Exception as e:
+        print(f"Warning: Failed to load previous session memory: {e}", file=sys.stderr)
+
+if query.strip():
+    messages.append({"role": "user", "parts": [{"text": query}]})
+    try:
+        with open(session_file, "w") as f:
+            json.dump(messages, f)
+    except Exception as e:
+        print(f"Warning: Failed to write to session memory: {e}", file=sys.stderr)
+
+# Optional reasoning cap. Thinking tokens bill at the OUTPUT rate but are reported
+# separately (usageMetadata.thoughtsTokenCount), so an uncapped budget is easy to miss
+# in token accounting. Empty -> omit thinkingConfig, leave the model default.
+tb = sys.argv[3] if len(sys.argv) > 3 else ""
+thinking = f"\"thinkingConfig\": {{ \"thinkingBudget\": {int(tb)} }}, " if tb.strip() else ""
+
+# tools (grounding), temperature and responseMimeType are caller-controlled. The two
+# pre-merge scripts disagreed on the last two - gemini-query.sh used 0.5 and no mime
+# type, the pre-merge fork used 0.2 and forced application/json - so neither is
+# hardcoded now: the defaults below match gemini-query.sh and a caller passes flags.
+tools_string = sys.argv[4] if len(sys.argv) > 4 else ""
+temperature  = sys.argv[5] if len(sys.argv) > 5 else "0.5"
+mime         = sys.argv[6] if len(sys.argv) > 6 else ""
+resp_mime = f"\"responseMimeType\": \"{mime}\", " if mime.strip() else ""
+
+payload_str = f"{{ {cache_string}{tools_string} \"contents\": {json.dumps(messages)}, \"generationConfig\": {{ {thinking}{resp_mime}\"temperature\": {float(temperature)}, \"topP\": 0.95, \"topK\": 40, \"maxOutputTokens\": 65536 }} }}"
+print(payload_str)
+' "${session_file}" "${cache_field}" "${THINKING_BUDGET}" "${tools_field}" "${TEMPERATURE}" "${RESPONSE_MIME}"
 }
 
 #
@@ -270,7 +385,7 @@ make_api_request() {
   local api_key="$1"
   local model_name="$2"
   local payload_data="$3"
-  
+   
   log_info "Sending request to model: ${model_name}"
   # Perform the API request, sending payload data via stdin
   local output
@@ -293,27 +408,42 @@ make_api_request() {
 }
 
 #
-# Processes the raw JSON response to extract the text content.
-#
-#
-# Processes the raw JSON response to extract the text content.
+# Processes the raw JSON response and updates the session history.
 #
 process_response() {
-   local raw_json="$1"
-   # Extract the text response using Python, piping the raw JSON via stdin
-   local extracted_text
-   extracted_text=$(echo "${raw_json}" | python3 -c "
-import json, sys
+  local raw_json="$1"
+  local session_file="$2"
+  
+  local extracted_text
+  extracted_text=$(python3 -c "
+import json, sys, os
+
+raw_text = sys.argv[1]
+session_file = sys.argv[2]
+
 try:
-    raw_text = sys.stdin.read() # <--- Reads from standard input
     if not raw_text:
         print('Error: Raw response is empty.', file=sys.stderr)
         sys.exit(1)
+        
     data = json.loads(raw_text)
+    
     if 'candidates' in data and data['candidates']:
         part = data['candidates'][0].get('content', {}).get('parts', [{}])[0]
         if 'text' in part:
-            print(part['text'])
+            assistant_text = part['text']
+            
+            if os.path.exists(session_file):
+                try:
+                    with open(session_file, 'r') as f:
+                        messages = json.load(f)
+                    messages.append({'role': 'model', 'parts': [{'text': assistant_text}]})
+                    with open(session_file, 'w') as f:
+                        json.dump(messages, f)
+                except Exception as e:
+                    print(f'Warning: Could not save assistant response to memory: {e}', file=sys.stderr)
+                    
+            print(assistant_text)
         else:
             print('Error: Text part not found in response.', file=sys.stderr)
             sys.exit(1)
@@ -323,60 +453,84 @@ try:
     else:
         print('Error: Unexpected JSON structure in response.', file=sys.stderr)
         sys.exit(1)
+        
 except json.JSONDecodeError:
     print('Error: Failed to decode JSON from API response.', file=sys.stderr)
-    print(f'--- Raw Response Start ---\\n{raw_text if \"raw_text\" in locals() else \"Could not read raw text\"}\\n--- Raw Response End ---', file=sys.stderr)
+    print(f'--- Raw Response Start ---\n{raw_text}\n--- Raw Response End ---', file=sys.stderr)
     sys.exit(1)
 except Exception as e:
     print(f'Error processing response: {e}', file=sys.stderr)
     sys.exit(1)
-")
+" "${raw_json}" "${session_file}")
 
-   # Check if python script exited with an error
-   if [ $? -ne 0 ]; then
-       echo "Error: Failed to extract text from the response." >&2
-       if [[ -n "${OUTPUT_RAW_FILE}" ]]; then
-       echo "Check ${OUTPUT_RAW_FILE} for details." >&2
-       fi
-       exit 1
-   fi
+  if [ $? -ne 0 ]; then
+      echo "Error: Failed to extract text from the response." >&2
+      if [[ -n "${OUTPUT_RAW_FILE}" ]]; then
+        echo "Check ${OUTPUT_RAW_FILE} for details." >&2
+      fi
+      exit 1
+  fi
 
-   # Return the final extracted text
-   echo "$extracted_text"
+  echo "$extracted_text"
 }
-
 
 # --- Main Execution ---
 
-#
-# Main function to orchestrate the script's execution.
-#
 main() {
   # Initialize variables
   local QUERY_STRING=""
   local QUERY_FILE=""
+  local CACHE_NAME=""
+  local SESSION_NAME=""
+  local CLEAR_SESSION="false"
+  local GROUND="false"
+  # generationConfig defaults match the pre-merge gemini-query.sh so its existing callers
+  # (SSTS) are unaffected. a caller wants -t 0.2 --json-output to match what
+  # the pre-merge fork hardcoded.
+  local TEMPERATURE="${TEMPERATURE_DEFAULT}"
+  local RESPONSE_MIME=""
+  # Empty -> omit thinkingConfig, leave the model default. Do NOT default this to 0: some
+  # models reject it outright ("Budget 0 is invalid. This model only works in thinking
+  # mode."). Callers wanting thinking off pass -tb 0, as one caller does -- its
+  # prompt says "DO NOT use any reasoning, scratchpad, or thought processes", the model
+  # ignored that advisory instruction and billed ~19.6k thinking tokens/call at the OUTPUT
+  # rate, and thinkingConfig enforces it for real. Set -tb -1 for dynamic.
+  local THINKING_BUDGET=""
   local API_KEY_FILE=""
   local MODEL="${DEFAULT_MODEL}"
   local OUTPUT_PAYLOAD_FILE=""
   local OUTPUT_RAW_FILE=""
   local OUTPUT_FILE=""
   local VERBOSE="false"
-  local GROUND="false"
-  local THINKING_BUDGET=""   # empty -> omit thinkingConfig, leave the model default
 
   parse_arguments "$@"
-  validate_input
-  
-  local api_key
-  api_key=$(get_api_key)
-  
-  local query
-  query=$(prepare_query)
-  
-  local payload
-  payload=$(generate_payload "${query}")
 
-  # Save payload to file if requested
+  # Ensure session directory exists
+  mkdir -p "${SESSION_DIR}"
+  local session_file_path="${SESSION_DIR}/session_${SESSION_NAME}.json"
+
+  # Handle memory clearing
+  if [[ "${CLEAR_SESSION}" == "true" ]]; then
+      if [ -f "${session_file_path}" ]; then
+          rm "${session_file_path}"
+          log_info "Cleared session memory: ${SESSION_NAME}"
+      fi
+      # If no query was provided along with --clear, just exit cleanly
+      if [[ -z "${QUERY_STRING}" && -z "${QUERY_FILE}" ]]; then
+          echo "Session '${SESSION_NAME}' has been cleared."
+          exit 0
+      fi
+  fi
+
+  validate_input
+   
+  local api_key
+  get_api_key                 # sets API_KEY; exits here if no key can be resolved
+  api_key="${API_KEY}"
+   
+  local payload
+  payload=$(generate_payload "${session_file_path}")
+
   if [[ -n "${OUTPUT_PAYLOAD_FILE}" ]]; then
     echo "${payload}" > "${OUTPUT_PAYLOAD_FILE}"
     log_info "Payload saved to ${OUTPUT_PAYLOAD_FILE}"
@@ -385,16 +539,14 @@ main() {
   local raw_output
   raw_output=$(make_api_request "${api_key}" "${MODEL}" "${payload}")
 
-  # Save raw output to file if requested
   if [[ -n "${OUTPUT_RAW_FILE}" ]]; then
     echo "${raw_output}" > "${OUTPUT_RAW_FILE}"
     log_info "Raw response saved to ${OUTPUT_RAW_FILE}"
   fi
 
   local final_text
-  final_text=$(process_response "${raw_output}")
+  final_text=$(process_response "${raw_output}" "${session_file_path}")
 
-  # If process_response was successful, handle the final output
   if [ $? -eq 0 ]; then
     if [[ -n "${OUTPUT_FILE}" ]]; then
       echo "${final_text}" > "${OUTPUT_FILE}"
@@ -407,4 +559,3 @@ main() {
 
 # Run the main function with all script arguments
 main "$@"
-
