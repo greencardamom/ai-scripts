@@ -56,8 +56,8 @@ TOKEN_ENV_VAR="LIFTWING_TOKEN"
 # credentials. Hosts keep secrets in different places; searching a list keeps ONE
 # script identical everywhere instead of a per-host fork.
 SECRET_SEARCH_DIRS=(
-   "${HOME}/.config/wikiget/secrets"
    "${HOME}/scripts/secrets"
+   "${HOME}/.config/wikiget/secrets"
    "${HOME}/toolforge/scripts/secrets"
 )
 # Basenames looked up inside SECRET_SEARCH_DIRS

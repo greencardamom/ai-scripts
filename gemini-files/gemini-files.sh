@@ -78,6 +78,20 @@
 # (Global - Accessed by functions)
 MODE=""
 API_KEY_ENV_VAR="GEMINI_API_KEY"
+# Secret directories searched, in order, when --keyfile is not given and the env var is
+# unset. Hosts keep secrets in different places; searching a list keeps ONE script
+# identical everywhere instead of a per-host fork.
+SECRET_SEARCH_DIRS=(
+   "${HOME}/scripts/secrets"
+   "${HOME}/.config/wikiget/secrets"
+   "${HOME}/toolforge/scripts/secrets"
+)
+# Basenames looked up inside SECRET_SEARCH_DIRS. Two spellings of the same key are in use
+# across the fleet (verified byte-identical), so both are searched.
+KEY_BASENAMES=(
+   "googlegemini.apikey"
+   "googlegemini.key"
+)
 LIST_BASE_URL="https://generativelanguage.googleapis.com/v1beta/files"
 API_ROOT_URL="https://generativelanguage.googleapis.com/v1beta"
 UPLOAD_BASE_URL="https://generativelanguage.googleapis.com/upload/v1beta/files"
@@ -127,7 +141,24 @@ usage() {
 # --- Function: Determine API Key ---
 #
 # Function: determine_api_key
-# Purpose: Sets the global API_KEY variable based on --keyfile or env var.
+# Purpose: Echoes the path of the first KEY_BASENAMES file found in SECRET_SEARCH_DIRS,
+#          else "".
+#
+find_secret() {
+   local dir base
+   for dir in "${SECRET_SEARCH_DIRS[@]}"; do
+      for base in "${KEY_BASENAMES[@]}"; do
+         if [[ -f "${dir}/${base}" ]]; then
+            echo "${dir}/${base}"
+            return 0
+         fi
+      done
+   done
+   return 0
+}
+
+#
+# Purpose: Sets the global API_KEY variable from --keyfile, the env var, or a secret dir.
 # Returns 0 on success, 1 on error.
 #
 determine_api_key() {
@@ -146,8 +177,18 @@ determine_api_key() {
       API_KEY=$(printf '%s' "${!API_KEY_ENV_VAR}" | tr -d '[:space:]')
       [[ "$VERBOSE" -eq 1 ]] && echo "Using API key from env var: $API_KEY_ENV_VAR" >&2
    else
-      echo "Error: API Key not found. Use --keyfile or set ${API_KEY_ENV_VAR}." >&2
-      return 1
+      local found
+      found=$(find_secret)
+      if [[ -n "$found" ]]; then
+         API_KEY=$(tr -d '[:space:]' <"$found")
+         [[ "$VERBOSE" -eq 1 ]] && echo "Using API key from default keyfile: $found" >&2
+      else
+         echo "Error: API Key not found. Use --keyfile, set ${API_KEY_ENV_VAR}, or place one of:" >&2
+         printf '  %s\n' "${KEY_BASENAMES[@]}" >&2
+         echo "in one of:" >&2
+         printf '  %s\n' "${SECRET_SEARCH_DIRS[@]}" >&2
+         return 1
+      fi
    fi
    if [[ -z "$API_KEY" ]]; then
       echo "Error: API Key is empty." >&2

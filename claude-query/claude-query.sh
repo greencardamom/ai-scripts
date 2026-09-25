@@ -88,6 +88,18 @@
 
 # --- Default Configuration ---
 API_KEY_ENV_VAR="ANTHROPIC_API_KEY"
+# Secret directories searched, in order, when --keyfile is not given and the env var is
+# unset. Hosts keep secrets in different places; searching a list keeps ONE script
+# identical everywhere instead of a per-host fork. Note this applies to the API path
+# only -- the agentic path shells out to CLAUDE_BIN, which holds its own session.
+SECRET_SEARCH_DIRS=(
+   "${HOME}/scripts/secrets"
+   "${HOME}/.config/wikiget/secrets"
+   "${HOME}/toolforge/scripts/secrets"
+)
+KEY_BASENAMES=(
+   "anthropic.apikey"
+)
 MESSAGES_URL="https://api.anthropic.com/v1/messages"
 MODELS_URL="https://api.anthropic.com/v1/models"
 COUNT_TOKENS_URL="https://api.anthropic.com/v1/messages/count_tokens"
@@ -164,7 +176,18 @@ usage() {
    exit 1
 }
 
-# --- Determine API key (--keyfile wins, else env var) ---
+# --- Echoes the path of the first KEY_BASENAMES file in SECRET_SEARCH_DIRS, else "" ---
+find_secret() {
+   local dir base
+   for dir in "${SECRET_SEARCH_DIRS[@]}"; do
+      for base in "${KEY_BASENAMES[@]}"; do
+         [ -f "${dir}/${base}" ] && { echo "${dir}/${base}"; return 0; }
+      done
+   done
+   return 0
+}
+
+# --- Determine API key (--keyfile wins, then env var, then a secret dir) ---
 determine_api_key() {
    if [ -n "$key_file_arg" ]; then
       [ -f "$key_file_arg" ] || { log_err "key file not found: $key_file_arg"; exit 1; }
@@ -173,8 +196,21 @@ determine_api_key() {
    elif [ -n "${!API_KEY_ENV_VAR:-}" ]; then
       API_KEY="${!API_KEY_ENV_VAR}"
       log_info "Using API key from \$$API_KEY_ENV_VAR"
+   else
+      local found
+      found=$(find_secret)
+      if [ -n "$found" ]; then
+         API_KEY="$(tr -d '[:space:]' < "$found")"
+         log_info "Using API key from default keyfile: $found"
+      fi
    fi
-   [ -n "$API_KEY" ] || { log_err "no API key (use -k/--keyfile or set \$$API_KEY_ENV_VAR)"; exit 1; }
+   if [ -z "$API_KEY" ]; then
+      log_err "no API key: use -k/--keyfile, set \$$API_KEY_ENV_VAR, or place one of:"
+      printf '  %s\n' "${KEY_BASENAMES[@]}" >&2
+      log_err "in one of:"
+      printf '  %s\n' "${SECRET_SEARCH_DIRS[@]}" >&2
+      exit 1
+   fi
 }
 
 # --- Guess media type from a file extension ---
