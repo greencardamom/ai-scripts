@@ -63,3 +63,6 @@ have prevented this; provenance might.
   **reasoning cannot be disabled** — those reasoning tokens bill at the output rate and are
   reported *outside* `completion_tokens`, so naive accounting understates the bill. The script
   folds them in and warns; see `--usage-file` for the normalized record.
+
+## License
+Code is GPL-3.0; documentation is CC BY-SA 4.0. See [LICENSE.md](LICENSE.md).
