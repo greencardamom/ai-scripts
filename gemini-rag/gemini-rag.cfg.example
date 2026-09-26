@@ -5,8 +5,10 @@
 # Copy to gemini-rag.cfg in this directory and edit. gemini-rag.cfg is
 # gitignored, so local paths stay local.
 
-# Python virtual environment to activate
+# Python virtual environment to activate. Required: gemini-rag.py needs
+# google-genai and tqdm, which are not usually installed system-wide.
 GEMINI_RAG_VENV_ACTIVATE="${HOME}/.virtualenvs/gemini-rag/bin/activate"
 
-# Directory containing gemini-rag.py and its helpers
-GEMINI_RAG_SCRIPTS_DIR="${HOME}/projects/gemini-rag"
+# Optional. gemini-rag.py ships beside this file and is found automatically;
+# set this only to run a copy kept somewhere else.
+#GEMINI_RAG_SCRIPTS_DIR="${HOME}/projects/gemini-rag"

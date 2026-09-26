@@ -12,18 +12,17 @@ CONFIG_FILE="$SCRIPT_DIR/gemini-rag.cfg"
 
 if [ ! -f "$CONFIG_FILE" ]; then
     echo "Error: Configuration file not found: $CONFIG_FILE"
+    echo "       Copy gemini-rag.cfg.example to gemini-rag.cfg and edit it."
     exit 1
 fi
 
 source "$CONFIG_FILE"
 
-# --- Validate Sourced Variables (Using Underscores) ---
+# gemini-rag.py ships beside this script, so the checkout location is not config.
+GEMINI_RAG_SCRIPTS_DIR="${GEMINI_RAG_SCRIPTS_DIR:-$SCRIPT_DIR}"
+
 if [ -z "${GEMINI_RAG_VENV_ACTIVATE:-}" ]; then
     echo "Error: GEMINI_RAG_VENV_ACTIVATE is not set in the config file."
-    exit 1
-fi
-if [ -z "${GEMINI_RAG_SCRIPTS_DIR:-}" ]; then
-    echo "Error: GEMINI_RAG_SCRIPTS_DIR is not set in the config file."
     exit 1
 fi
 
