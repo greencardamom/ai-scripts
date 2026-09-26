@@ -115,7 +115,7 @@ show_help() {
    echo "                            direct  = straight to api.wikimedia.org. Subject to the"
    echo "                                      100 req/hour cap shared across ALL llm-* models,"
    echo "                                      which a token does NOT raise (see below)."
-   echo "                            tfproxy = through a Toolforge proxy. Toolforge is a"
+   echo "                            tfproxy = through a proxy you run on Toolforge, which is a"
    echo "                                      'known network' = effectively unlimited. No token"
    echo "                                      is sent; the tier comes from the request origin."
    echo "  -k, --key-file <path>     File containing an OAuth 2.0 access token (JWT)."
@@ -585,8 +585,8 @@ make_api_request() {
             [[ -s "${body_file}" ]] && head -c 500 "${body_file}" >&2 && echo >&2
             if [[ "${VIA}" == "tfproxy" ]]; then
                echo "       In proxy mode a 403 is the PROXY rejecting the shared secret," >&2
-               echo "       not LiftWing. Check ${TFPROXY_PASSWORD_BASENAME} against the value" >&2
-               echo "       that the proxy expects." >&2
+               echo "       not LiftWing. Check ${TFPROXY_PASSWORD_BASENAME} against the secret" >&2
+               echo "       the proxy expects." >&2
             else
                echo "       The token must be an OAuth 2.0 access token (JWT). Use --anon to query without one." >&2
             fi

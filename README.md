@@ -46,9 +46,12 @@ have prevented this; provenance might.
 - **LiftWing rate limits** are the whole story for `liftwing-query`. LiftWing defines three tiers:
   anonymous/authenticated = **100 req/hour shared across all `llm-*` models**; *known network*
   (Toolforge/WMCS) = unlimited; *approved bot* = unlimited. An OAuth 2.0 JWT does **not** raise the
-  quota — it only changes the gateway's `x-wmf-ratelimit-class`. For any real volume use
-  **`--via tfproxy`**, which routes through the a Toolforge-hosted proxy, and therefore
-  qualifies as a known network. No token is sent in proxy mode.
+  quota — it only changes the gateway's `x-wmf-ratelimit-class`. The tier comes from where the
+  request *originates*, so for any real volume the answer is to make it originate from a
+  Toolforge/WMCS address. **`--via tfproxy`** does that by forwarding through a proxy you run
+  there; supply its URL, auth header and shared secret as `tfproxy.url`, `tfproxy.header` and
+  `tfproxy.password` in a secrets directory. Any proxy taking the destination in `?target=`
+  works. No token is sent in proxy mode.
 - **LiftWing direct auth** (`--via direct`) needs an *OAuth 2.0* access token (a JWT). OAuth 1.0a
   consumer credentials are **not** accepted by the api.wikimedia.org gateway. Register an
   owner-only OAuth 2.0 client at `meta:Special:OAuthConsumerRegistration/propose/oauth2`;
