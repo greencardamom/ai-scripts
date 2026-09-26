@@ -53,9 +53,9 @@ have prevented this; provenance might.
   `tfproxy.password` in a secrets directory. Any proxy taking the destination in `?target=`
   works. No token is sent in proxy mode.
 - **LiftWing direct auth** (`--via direct`) needs an *OAuth 2.0* access token (a JWT). OAuth 1.0a
-  consumer credentials are **not** accepted by the api.wikimedia.org gateway. Register an
-  owner-only OAuth 2.0 client at `meta:Special:OAuthConsumerRegistration/propose/oauth2`;
-  owner-only tokens never expire.
+  consumer credentials are **not** accepted by the api.wikimedia.org gateway, so an existing
+  1.0a consumer cannot be reused here. Register an owner-only OAuth 2.0 client at
+  `meta:Special:OAuthConsumerRegistration/propose/oauth2`; owner-only tokens never expire.
 - **xAI pricing is tiered at 200k prompt tokens** — crossing it *doubles* both the input and
   output rate for the entire request, so a 210k-token prompt costs more than twice a 190k one.
   `xai-query.sh` reports which tier a call landed in. Its default model
