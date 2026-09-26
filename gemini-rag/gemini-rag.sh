@@ -6,7 +6,8 @@
 
 # --- Wrapper for gemini-rag.py ---
 
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+# readlink -f so the config is found next to the real script, not next to a symlink
+SCRIPT_DIR="$( cd "$( dirname "$(readlink -f "${BASH_SOURCE[0]}")" )" &> /dev/null && pwd )"
 CONFIG_FILE="$SCRIPT_DIR/gemini-rag.cfg"
 
 if [ ! -f "$CONFIG_FILE" ]; then

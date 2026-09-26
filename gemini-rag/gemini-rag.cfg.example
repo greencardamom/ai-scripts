@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# --- Central Configuration for gemini-rag.py ---
+#
+# Copy to gemini-rag.cfg in this directory and edit. gemini-rag.cfg is
+# gitignored, so local paths stay local.
+
+# Python virtual environment to activate
+GEMINI_RAG_VENV_ACTIVATE="${HOME}/.virtualenvs/gemini-rag/bin/activate"
+
+# Directory containing gemini-rag.py and its helpers
+GEMINI_RAG_SCRIPTS_DIR="${HOME}/projects/gemini-rag"
