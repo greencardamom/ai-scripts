@@ -365,9 +365,9 @@ tb = sys.argv[3] if len(sys.argv) > 3 else ""
 thinking = f"\"thinkingConfig\": {{ \"thinkingBudget\": {int(tb)} }}, " if tb.strip() else ""
 
 # tools (grounding), temperature and responseMimeType are caller-controlled. The two
-# pre-merge scripts disagreed on the last two - gemini-query.sh used 0.5 and no mime
-# type, the pre-merge fork used 0.2 and forced application/json - so neither is
-# hardcoded now: the defaults below match gemini-query.sh and a caller passes flags.
+# pre-merge scripts disagreed on the last two - one used 0.5 and no mime type, the other
+# 0.2 and forced application/json - so neither is hardcoded now: the defaults below keep
+# the original callers unchanged, and callers wanting the other behaviour pass flags.
 tools_string = sys.argv[4] if len(sys.argv) > 4 else ""
 temperature  = sys.argv[5] if len(sys.argv) > 5 else "0.5"
 mime         = sys.argv[6] if len(sys.argv) > 6 else ""
@@ -484,17 +484,16 @@ main() {
   local SESSION_NAME=""
   local CLEAR_SESSION="false"
   local GROUND="false"
-  # generationConfig defaults match the pre-merge gemini-query.sh so its existing callers
-  # (SSTS) are unaffected. a caller wants -t 0.2 --json-output to match what
-  # the pre-merge fork hardcoded.
+  # generationConfig defaults match the pre-merge script so its existing callers are
+  # unaffected; callers wanting JSON at a lower temperature pass -t 0.2 --json-output.
   local TEMPERATURE="${TEMPERATURE_DEFAULT}"
   local RESPONSE_MIME=""
   # Empty -> omit thinkingConfig, leave the model default. Do NOT default this to 0: some
   # models reject it outright ("Budget 0 is invalid. This model only works in thinking
-  # mode."). Callers wanting thinking off pass -tb 0, as one caller does -- its
-  # prompt says "DO NOT use any reasoning, scratchpad, or thought processes", the model
+  # mode."). Callers wanting thinking off pass -tb 0. Asking in the prompt does not work:
+  # one caller said "DO NOT use any reasoning, scratchpad, or thought processes", the model
   # ignored that advisory instruction and billed ~19.6k thinking tokens/call at the OUTPUT
-  # rate, and thinkingConfig enforces it for real. Set -tb -1 for dynamic.
+  # rate. thinkingConfig enforces it for real. Set -tb -1 for dynamic.
   local THINKING_BUDGET=""
   local API_KEY_FILE=""
   local MODEL="${DEFAULT_MODEL}"

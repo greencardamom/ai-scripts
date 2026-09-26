@@ -9,8 +9,8 @@ the stable `~/scripts/<tool>.sh` path and never the repo location directly.
 
 | Tool | Backend | Notes |
 |------|---------|-------|
-| `gemini-query/` | Google Gemini API | prompt → JSON; supports `--ground` (Google-Search grounding) |
-| `gemini-files/` | Gemini Files API | upload a doc + query it (large-PDF attach) |
+| `gemini-query/` | Google Gemini API | prompt → JSON; `--ground` (Google-Search grounding), `--cache` (Context Cache), `--session` (conversation memory) |
+| `gemini-files/` | Gemini Files API | upload a doc + query it (large-PDF attach); creates the Context Caches `gemini-query --cache` reads |
 | `gemini-rag/`   | Gemini + retrieval | RAG helper (`.sh` + `.py` + `.cfg`) |
 | `claude-query/` | Anthropic Claude | `--via api` (metered) or `--via claudecode` (Claude Code subscription) |
 | `antigravity-query/` | Antigravity (`agy`) | flat-rate proxy to Gemini/Claude/GPT; exit `3`=5h cap, `4`=weekly cap |
@@ -34,12 +34,15 @@ The cost hierarchy, in order of preference:
 Every entry carries `source` and `verified`. This file exists because a consumer once ran for
 months on a superseded model's rates, recorded as "reverse-solved from the log" — circular, since
 the log had been written by those same constants, so nothing in it could ever contradict them.
-The real rates were 20x and 30x higher.
-**Only comparing against the actual invoice caught it** — so prefer an invoice over a docs page,
-and re-verify periodically. Deduplication alone would not have prevented this; provenance might.
+The real rates were 20x and 30x higher. **Only comparing against the actual invoice caught it**,
+so prefer an invoice over a docs page and re-verify periodically. Deduplication alone would not
+have prevented this; provenance might.
 
 ## Conventions
-- **Secrets** are never stored here — each script reads its key from a keyfile (e.g. `-k <keyfile>`).
+- **Secrets are never stored here**, and are located by search rather than by hardcoded path.
+  Each script looks in `~/scripts/secrets`, `~/.config/wikiget/secrets`, then
+  `~/toolforge/scripts/secrets` (first match wins), so the *same file* runs unmodified on every
+  host with no per-host fork to maintain. `-k <keyfile>` overrides the search.
 - **LiftWing rate limits** are the whole story for `liftwing-query`. LiftWing defines three tiers:
   anonymous/authenticated = **100 req/hour shared across all `llm-*` models**; *known network*
   (Toolforge/WMCS) = unlimited; *approved bot* = unlimited. An OAuth 2.0 JWT does **not** raise the
@@ -50,9 +53,6 @@ and re-verify periodically. Deduplication alone would not have prevented this; p
   consumer credentials are **not** accepted by the api.wikimedia.org gateway. Register an
   owner-only OAuth 2.0 client at `meta:Special:OAuthConsumerRegistration/propose/oauth2`;
   owner-only tokens never expire.
-- **Secrets are located by search, not hardcoded path.** `liftwing-query.sh` looks in
-  `~/.config/wikiget/secrets`, `~/scripts/secrets`, then `~/toolforge/scripts/secrets` (first match
-  wins), so the *same file* runs unmodified on acre and sheep — no per-host fork to maintain.
 - **xAI pricing is tiered at 200k prompt tokens** — crossing it *doubles* both the input and
   output rate for the entire request, so a 210k-token prompt costs more than twice a 190k one.
   `xai-query.sh` reports which tier a call landed in. Its default model
@@ -63,5 +63,5 @@ and re-verify periodically. Deduplication alone would not have prevented this; p
   folds them in and warns; see `--usage-file` for the normalized record.
 - **Symlinks:** `~/scripts/<tool>.sh -> <repo path>/<tool>/<tool>.sh`, created per host so each
   resolves against that host's own `$HOME`.
-- **Consumers reference `~/scripts/<tool>.sh`** (the stable symlink), so moving files within the repo never breaks them.
-
+- **Consumers reference `~/scripts/<tool>.sh`** (the stable symlink), so moving files within the
+  repo never breaks them.
