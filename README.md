@@ -4,8 +4,8 @@ Provider **adapter scripts** for talking to LLM backends — each takes a prompt
 PDF/document), calls one provider, and returns JSON. These are the "channels" that higher-level
 tools dispatch to via config.
 
-One subdirectory per tool. Each is symlinked into `~/scripts/` (on `$PATH`), so consumers reference
-the stable `~/scripts/<tool>.sh` path and never the repo location directly.
+One subdirectory per tool, each a standalone script with no build step. Put them wherever you
+like; nothing here depends on where the repo lives.
 
 | Tool | Backend | Notes |
 |------|---------|-------|
@@ -18,8 +18,7 @@ the stable `~/scripts/<tool>.sh` path and never the repo location directly.
 | `xai-query/` | xAI Grok | metered, OpenAI-shaped; `--usage-file` emits token/cost JSON; exit `3`=rate limited |
 
 ## Token prices — `llm-rates.json`
-Every consumer that computes a cost reads **`llm-rates.json`** (symlinked to `~/scripts/llm-rates.json`).
-Do not hardcode a rate anywhere else.
+Every consumer that computes a cost reads **`llm-rates.json`**. Do not hardcode a rate anywhere else.
 
 The cost hierarchy, in order of preference:
 1. **The cost the provider reports for the actual call.** xAI returns `usage.cost_in_usd_ticks`
@@ -64,7 +63,3 @@ have prevented this; provenance might.
   **reasoning cannot be disabled** — those reasoning tokens bill at the output rate and are
   reported *outside* `completion_tokens`, so naive accounting understates the bill. The script
   folds them in and warns; see `--usage-file` for the normalized record.
-- **Symlinks:** `~/scripts/<tool>.sh -> <repo path>/<tool>/<tool>.sh`, created per host so each
-  resolves against that host's own `$HOME`.
-- **Consumers reference `~/scripts/<tool>.sh`** (the stable symlink), so moving files within the
-  repo never breaks them.
