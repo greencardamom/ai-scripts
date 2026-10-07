@@ -72,11 +72,14 @@ show_help() {
   echo "  -q, --query <string>      A string containing the query to send."
   echo "  -f, --file <path>         Path to a file containing the query."
   echo "  -s, --session <name>      Name of the conversation memory session (defaults to '${DEFAULT_SESSION}')."
+  echo "  --no-session              No conversation memory: nothing is read from or saved to a"
+  echo "                            session file, so parallel callers cannot collide."
   echo "  --clear                   Clear the history for the specified session. Exits if no"
   echo "                            query follows; otherwise clears, then runs the query."
   echo "  -c, --cache <name>        Name of the Context Cache to query (e.g. cachedContents/xxxx)."
   echo "  -g, --ground              Enable Google Search grounding for the query."
-  echo "  -t, --temperature <n>     Sampling temperature. Defaults to ${TEMPERATURE_DEFAULT}."
+  echo "  -t, --temperature <n>     Sampling temperature (default ${TEMPERATURE_DEFAULT}). Sent only to models up to"
+  echo "                            Gemini 3.5; 3.6+ ignore sampling and newer models reject it."
   echo "  --json-output             Ask the model for application/json (sets responseMimeType)."
   echo "  --response-mime-type <s>  Set responseMimeType explicitly. Unset leaves it off."
   echo "  -o, --output-file <path>  Optional path to save the final text output."
@@ -86,9 +89,12 @@ show_help() {
   echo "  -op, --output-payload <path> Optional path to save the JSON payload sent to the API."
   echo "  -or, --output-raw <path>  Optional path to save the raw JSON response from the API."
   echo "  -v, --verbose             Enable verbose logging (outputs 'Info:' messages to stderr)."
-  echo "  -tb, --thinking-budget <n> Cap reasoning tokens. 0 disables thinking, -1 is dynamic."
-  echo "                            Unset leaves the model default. Thinking tokens bill at the"
-  echo "                            OUTPUT rate, so an uncapped budget can dominate the invoice."
+  echo "  -tl, --thinking-level <l> Gemini 3+: minimal, low, medium or high (supported levels"
+  echo "                            vary by model). Unset leaves the model default."
+  echo "  -tb, --thinking-budget <n> Gemini 2.x: cap reasoning tokens (0 off, -1 dynamic). On"
+  echo "                            Gemini 3+ it is mapped to a level: 0 minimal (low on 3.6+), <=1024 low,"
+  echo "                            <=8192 medium, more high, -1 model default. Thinking tokens"
+  echo "                            bill at the OUTPUT rate, so an uncapped budget adds up."
   echo "  -h, --help                Show this help message."
   echo ""
   echo "API Key:"
@@ -135,6 +141,10 @@ parse_arguments() {
               SESSION_NAME="$2"
               shift 2
               ;;
+          --no-session)
+              NO_SESSION="true"
+              shift 1
+              ;;
           --clear)
               CLEAR_SESSION="true"
               shift 1
@@ -153,6 +163,7 @@ parse_arguments() {
                   exit 1
               fi
               TEMPERATURE="$2"
+              TEMPERATURE_SET="1"
               shift 2
               ;;
           --json-output)
@@ -170,6 +181,14 @@ parse_arguments() {
                   exit 1
               fi
               THINKING_BUDGET="$2"
+              shift 2
+              ;;
+          -tl|--thinking-level)
+              if ! [[ "$2" =~ ^(minimal|low|medium|high)$ ]]; then
+                  echo "Error: --thinking-level requires minimal, low, medium or high." >&2
+                  exit 1
+              fi
+              THINKING_LEVEL="$2"
               shift 2
               ;;
           -o|--output-file)
@@ -336,7 +355,7 @@ generate_payload() {
   fi
 
   printf "%s" "${raw_query}" | python3 -c '
-import json, sys, os
+import json, sys, os, re
 
 session_file = sys.argv[1]
 cache_string = sys.argv[2]
@@ -361,8 +380,32 @@ if query.strip():
 # Optional reasoning cap. Thinking tokens bill at the OUTPUT rate but are reported
 # separately (usageMetadata.thoughtsTokenCount), so an uncapped budget is easy to miss
 # in token accounting. Empty -> omit thinkingConfig, leave the model default.
+#
+# Google, 2026-10: thinkingBudget will be rejected by upcoming models (thinkingLevel instead), and
+# temperature/topP/topK have had no effect since Gemini 3.6 and will be rejected too. Gemini 2.x
+# only understands thinkingBudget, and 3.0-3.5 still honour sampling, so those keep the old fields.
+# An unrecognised model name is treated as the newest generation.
+model = sys.argv[7] if len(sys.argv) > 7 else ""
+level = sys.argv[8] if len(sys.argv) > 8 else ""
+mv = re.match(r"(?:models/)?gemini-(\d+)(?:\.(\d+))?", model)
+major, minor = (int(mv.group(1)), int(mv.group(2) or 0)) if mv else (99, 0)
+legacy_sampling = (major, minor) <= (3, 5)
+if not legacy_sampling and (sys.argv[9] if len(sys.argv) > 9 else ""):
+    print(f"Warning: --temperature is ignored for {model}: Gemini 3.6+ does not accept sampling parameters", file=sys.stderr)
 tb = sys.argv[3] if len(sys.argv) > 3 else ""
-thinking = f"\"thinkingConfig\": {{ \"thinkingBudget\": {int(tb)} }}, " if tb.strip() else ""
+if major < 3:
+    if level:
+        print(f"Warning: --thinking-level needs Gemini 3+, ignored for {model}", file=sys.stderr)
+    thinking = f"\"thinkingConfig\": {{ \"thinkingBudget\": {int(tb)} }}, " if tb.strip() else ""
+else:
+    if not level and tb.strip():
+        b = int(tb)
+        level = "" if b < 0 else "minimal" if b == 0 else "low" if b <= 1024 else "medium" if b <= 8192 else "high"
+        # Measured 2026-10-07: 3.7 and 3.8 Flash reject MINIMAL (400), so from 3.6 thinking cannot be turned off.
+        if level == "minimal" and (major, minor) > (3, 5):
+            level = "low"
+            print(f"Warning: thinking cannot be turned off on {model}; --thinking-budget 0 sent as thinkingLevel low", file=sys.stderr)
+    thinking = f"\"thinkingConfig\": {{ \"thinkingLevel\": \"{level}\" }}, " if level else ""
 
 # tools (grounding), temperature and responseMimeType are caller-controlled. The two
 # pre-merge scripts disagreed on the last two - one used 0.5 and no mime type, the other
@@ -372,10 +415,11 @@ tools_string = sys.argv[4] if len(sys.argv) > 4 else ""
 temperature  = sys.argv[5] if len(sys.argv) > 5 else "0.5"
 mime         = sys.argv[6] if len(sys.argv) > 6 else ""
 resp_mime = f"\"responseMimeType\": \"{mime}\", " if mime.strip() else ""
+sampling = f"\"temperature\": {float(temperature)}, \"topP\": 0.95, \"topK\": 40, " if legacy_sampling else ""
 
-payload_str = f"{{ {cache_string}{tools_string} \"contents\": {json.dumps(messages)}, \"generationConfig\": {{ {thinking}{resp_mime}\"temperature\": {float(temperature)}, \"topP\": 0.95, \"topK\": 40, \"maxOutputTokens\": 65536 }} }}"
+payload_str = f"{{ {cache_string}{tools_string} \"contents\": {json.dumps(messages)}, \"generationConfig\": {{ {thinking}{resp_mime}{sampling}\"maxOutputTokens\": 65536 }} }}"
 print(payload_str)
-' "${session_file}" "${cache_field}" "${THINKING_BUDGET}" "${tools_field}" "${TEMPERATURE}" "${RESPONSE_MIME}"
+' "${session_file}" "${cache_field}" "${THINKING_BUDGET}" "${tools_field}" "${TEMPERATURE}" "${RESPONSE_MIME}" "${MODEL}" "${THINKING_LEVEL}" "${TEMPERATURE_SET}"
 }
 
 #
@@ -483,10 +527,12 @@ main() {
   local CACHE_NAME=""
   local SESSION_NAME=""
   local CLEAR_SESSION="false"
+  local NO_SESSION="false"
   local GROUND="false"
   # generationConfig defaults match the pre-merge script so its existing callers are
   # unaffected; callers wanting JSON at a lower temperature pass -t 0.2 --json-output.
   local TEMPERATURE="${TEMPERATURE_DEFAULT}"
+  local TEMPERATURE_SET=""
   local RESPONSE_MIME=""
   # Empty -> omit thinkingConfig, leave the model default. Do NOT default this to 0: some
   # models reject it outright ("Budget 0 is invalid. This model only works in thinking
@@ -495,6 +541,7 @@ main() {
   # ignored that advisory instruction and billed ~19.6k thinking tokens/call at the OUTPUT
   # rate. thinkingConfig enforces it for real. Set -tb -1 for dynamic.
   local THINKING_BUDGET=""
+  local THINKING_LEVEL=""
   local API_KEY_FILE=""
   local MODEL="${DEFAULT_MODEL}"
   local OUTPUT_PAYLOAD_FILE=""
@@ -507,6 +554,12 @@ main() {
   # Ensure session directory exists
   mkdir -p "${SESSION_DIR}"
   local session_file_path="${SESSION_DIR}/session_${SESSION_NAME}.json"
+  # --no-session: a not-yet-existing file in a private temp dir, removed on exit.
+  if [[ "${NO_SESSION}" == "true" ]]; then
+      NOSESSION_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gemini-query.XXXXXX")
+      trap 'rm -rf -- "${NOSESSION_DIR:?}"' EXIT
+      session_file_path="${NOSESSION_DIR}/session.json"
+  fi
 
   # Handle memory clearing
   if [[ "${CLEAR_SESSION}" == "true" ]]; then

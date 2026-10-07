@@ -9,13 +9,28 @@ like; nothing here depends on where the repo lives.
 
 | Tool | Backend | Notes |
 |------|---------|-------|
-| `gemini-query/` | Google Gemini API | prompt → JSON; `--ground` (Google-Search grounding), `--cache` (Context Cache), `--session` (conversation memory) |
-| `gemini-files/` | Gemini Files API | upload a doc + query it (large-PDF attach); creates the Context Caches `gemini-query --cache` reads |
+| `gemini-query/` | Google Gemini API | prompt → JSON; `--ground` (Google-Search grounding), `--cache` (Context Cache), `--session` (conversation memory); `-tl` thinking level, `-tb` thinking budget, `-t` temperature (see below) |
+| `gemini-files/` | Gemini Files API | upload a doc + query it (large-PDF attach); creates the Context Caches `gemini-query --cache` reads; default model `gemini-3.7-flash`; `--thinking-level` |
 | `gemini-rag/`   | Gemini + retrieval | RAG helper (`.sh` + `.py`); copy `gemini-rag.cfg.example` to `gemini-rag.cfg` and set the venv and script paths |
 | `claude-query/` | Anthropic Claude | `--via api` (metered) or `--via claudecode` (Claude Code subscription) |
 | `antigravity-query/` | Antigravity (`agy`) | flat-rate proxy to Gemini/Claude/GPT; exit `3`=5h cap, `4`=weekly cap |
 | `liftwing-query/` | Wikimedia LiftWing | free, OpenAI-shaped; `--via tfproxy` for unlimited rate; exit `3`=rate limited |
 | `xai-query/` | xAI Grok | metered, OpenAI-shaped; `--usage-file` emits token/cost JSON; exit `3`=rate limited |
+
+## Gemini thinking and sampling
+Google is retiring `thinkingBudget` and the sampling parameters (`temperature`, `topP`, `topK`):
+Gemini 3.6+ ignores sampling and upcoming models reject both with a 400. `gemini-query` and
+`gemini-files` decide per model what to send:
+
+- **Sampling** goes only to Gemini 2.x and 3.0–3.5, where it still has an effect. On 3.6+ it is
+  left out, and an explicit `-t` prints a warning on stderr.
+- **Thinking**: `-tl` / `--thinking-level` (`minimal|low|medium|high`) sets `thinkingLevel` on
+  Gemini 3+ and is ignored, with a warning, on 2.x. `gemini-query -tb` stays the 2.x control; on 3+
+  it is mapped to a level (0 minimal, ≤1024 low, ≤8192 medium, more high, -1 model default).
+- **Levels vary by model.** 3.7 and 3.8 Flash reject `minimal` (thinking cannot be turned off), so
+  `-tb 0` becomes `low` there, with a warning. An explicit `-tl minimal` is sent as asked.
+- Thinking tokens bill at the output rate. On a one-page PDF summary, 3.7 Flash used 541 thought
+  tokens at its default level and 205 at `low`, so `low` is worth setting where quality allows.
 
 ## Token prices — `llm-rates.json`
 Every consumer that computes a cost reads **`llm-rates.json`**. Do not hardcode a rate anywhere else.

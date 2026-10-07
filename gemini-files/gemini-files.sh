@@ -59,6 +59,8 @@
 #   --model <name>         Model to use for --query (e.g., gemini-1.5-pro-latest).
 #                          (Default: See DEFAULT_MODEL in config).
 #   --max-tokens <number>  Max output tokens for --query (Default: See DEFAULT_MAX_TOKENS).
+#   --thinking-level <l>   Gemini 3+ thinking for --query: minimal, low, medium or high (levels vary
+#                          by model). Unset leaves the model default. Ignored, with a warning, on 2.x.
 #   --json-output          For --query mode, output the raw API JSON response instead of just extracted text.
 #   --keyfile <path>       Path to the file containing the Google API Key.
 #                          (Overrides environment variable if both are set).
@@ -96,7 +98,7 @@ LIST_BASE_URL="https://generativelanguage.googleapis.com/v1beta/files"
 API_ROOT_URL="https://generativelanguage.googleapis.com/v1beta"
 UPLOAD_BASE_URL="https://generativelanguage.googleapis.com/upload/v1beta/files"
 GENERATE_CONTENT_URL_TEMPLATE="https://generativelanguage.googleapis.com/v1beta/models/\${MODEL}:generateContent"
-DEFAULT_MODEL="gemini-2.0-flash-lite"
+DEFAULT_MODEL="gemini-3.7-flash"
 DEFAULT_MAX_TOKENS=8192 # Default for query mode
 PAGE_SIZE=100
 DELETE_DELAY=0.5
@@ -114,6 +116,7 @@ files_to_upload_args=()
 file_to_query=""
 query_file_path=""
 model_name=""
+thinking_level=""
 max_output_tokens_arg="" # Store value from --max-tokens
 output_json_flag=0
 grounding_flag=0
@@ -683,14 +686,20 @@ run_mode_query() {
       [[ "$VERBOSE" -eq 1 ]] && echo "Web grounding ENABLED (google_search tool)" >&2
    fi
 
-   # Construct Payload JSON string with dynamic max tokens (+ tools if grounding)
+   if [[ -n "$thinking_level" && "$query_model" =~ gemini-([0-9]+) ]] && (( BASH_REMATCH[1] < 3 )); then
+      echo "Warning: --thinking-level needs Gemini 3+, ignored for $query_model" >&2
+   fi
+   # Construct Payload JSON string with dynamic max tokens (+ tools if grounding). Sampling fields only
+   # up to Gemini 3.5: Google (2026-10) says 3.6+ ignore them and upcoming models reject them.
    payload_json=$(jq -nc \
       --arg qry "$query_text" \
       --arg mime "$query_file_mime_type" \
       --arg uri "$query_file_uri" \
       --argjson tokens "$max_tokens_to_use" \
       --argjson tools "$tools_json" \
-      '{ "contents": [ { "parts":[ { "text": $qry }, { "fileData": { "mimeType": $mime, "fileUri": $uri } } ] } ], "generationConfig": { "temperature": 0.5, "topP": 0.95, "topK": 40, "maxOutputTokens": $tokens } } + (if ($tools|length) > 0 then { "tools": $tools } else {} end)')
+      --arg model "$query_model" \
+      --arg level "$thinking_level" \
+      '(($model | capture("gemini-(?<maj>[0-9]+)([.](?<min>[0-9]+))?"))? // {"maj": "99"}) as $v | ((($v.maj|tonumber) < 3) or (($v.maj|tonumber) == 3 and (($v.min // "0")|tonumber) <= 5)) as $legacy | { "contents": [ { "parts":[ { "text": $qry }, { "fileData": { "mimeType": $mime, "fileUri": $uri } } ] } ], "generationConfig": ((if $legacy then { "temperature": 0.5, "topP": 0.95, "topK": 40 } else {} end) + (if $level != "" and ($v.maj|tonumber) >= 3 then { "thinkingConfig": { "thinkingLevel": $level } } else {} end) + { "maxOutputTokens": $tokens }) } + (if ($tools|length) > 0 then { "tools": $tools } else {} end)')
    jq_exit_code=$?
    if [[ $jq_exit_code -ne 0 || -z "$payload_json" ]]; then
       echo "Error: Failed to construct JSON payload." >&2
@@ -901,6 +910,13 @@ parse_arguments() {
                echo "E: --keyfile needs path." >&2
                usage
             fi ;;
+            --thinking-level) if [[ "$2" =~ ^(minimal|low|medium|high)$ ]]; then
+               thinking_level="$2"
+               shift 2
+            else
+               echo "E: --thinking-level needs minimal, low, medium or high." >&2
+               usage
+            fi ;;
             --max-tokens) # New option
                if [[ -n "$2" && "$2" =~ ^[1-9][0-9]*$ ]]; then
                   max_output_tokens_arg="$2"
@@ -980,6 +996,10 @@ parse_arguments() {
    fi
    if [[ "$MODE" != "query" && -n "$query_file_path" ]]; then
       echo "Error: --query-file only valid with --query." >&2
+      usage
+   fi
+   if [[ "$MODE" != "query" && -n "$thinking_level" ]]; then
+      echo "Error: --thinking-level only valid with --query." >&2
       usage
    fi
    if [[ "$MODE" != "query" && -n "$model_name" ]]; then
