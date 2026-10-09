@@ -10,7 +10,7 @@ like; nothing here depends on where the repo lives.
 | Tool | Backend | Notes |
 |------|---------|-------|
 | `gemini-query/` | Google Gemini API | prompt → JSON; `--ground` (Google-Search grounding), `--cache` (Context Cache), `--session` (conversation memory); `-tl` thinking level, `-tb` thinking budget, `-t` temperature (see below) |
-| `gemini-files/` | Gemini Files API | upload a doc + query it (large-PDF attach); creates the Context Caches `gemini-query --cache` reads; default model `gemini-3.7-flash`; `--thinking-level` |
+| `gemini-files/` | Gemini Files API | upload a doc + query it (large-PDF attach); creates the Context Caches `gemini-query --cache` reads; default model `gemini-3.8-flash`; `--thinking-level` |
 | `gemini-rag/`   | Gemini + retrieval | RAG helper (`.sh` + `.py`); copy `gemini-rag.cfg.example` to `gemini-rag.cfg` and set the venv and script paths |
 | `claude-query/` | Anthropic Claude | `--via api` (metered) or `--via claudecode` (Claude Code subscription) |
 | `antigravity-query/` | Antigravity (`agy`) | flat-rate proxy to Gemini/Claude/GPT; exit `3`=5h cap, `4`=weekly cap |

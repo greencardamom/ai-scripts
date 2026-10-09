@@ -42,6 +42,14 @@
           "source": "GCP invoice 2026-07 (Jul 1-31). SKU 63AC-2BA8-3F85 input: $1036.37 list / 690,914,771 tok = $1.50/M. SKU F9BE-D8E8-69E9 output: $906.37 / 100,707,487 tok = $9.00/M. SKU AA25-11AF-C82D cached input: $3.51 / 23,430,389 tok = $0.15/M.",
           "verified": "2026-08-15",
           "notes": "LIST price. That invoice also carried an 'Other savings' line of ~15.6% (effective $1.266/$7.631). Rates here are deliberately list, so a promotional discount lapsing cannot silently understate cost. thoughtsTokenCount bills at the OUTPUT rate and is reported OUTSIDE candidatesTokenCount -- add it in, or output is undercounted (measured 8.67x in Jul 2026)."
+        },
+        "gemini-3.8-flash": {
+          "input": 1.50,
+          "output": 7.50,
+          "cached_input": 0.15,
+          "source": "Google pricing page https://ai.google.dev/gemini-api/docs/pricing, fetched 2026-10-09, and Google's 3.7 Flash deprecation email of 2026-10-09 (promo $0.75/$3.75 = 50% off). NOT invoice-verified.",
+          "verified": "pricing page only (2026-10-09)",
+          "notes": "LIST price from 2027-01-01; through 2026-12-31 Google charges half. Added to providers{} before an invoice line at the owner's request (2026-10-09) so noisbn/pagesapi can run it. Check against the first GCP invoice with the 3.8 Flash SKU. Output includes thinking tokens; 3.8 cannot turn thinking off (MINIMAL rejected)."
         }
       }
     },
